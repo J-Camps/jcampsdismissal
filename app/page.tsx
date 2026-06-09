@@ -434,14 +434,16 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 // ─── Counselor View ───────────────────────────────────────────────────────────
 
-type GroupBy = "dismissal" | "lunch";
+type GroupBy = "dismissal" | "lunch" | "attendance";
 
 const GROUP_BY_OPTIONS: { id: GroupBy; label: string }[] = [
-  { id: "dismissal", label: "Dismissal" },
-  { id: "lunch",     label: "Lunch"     },
+  { id: "attendance", label: "Attendance" },
+  { id: "dismissal",  label: "Dismissal"  },
+  { id: "lunch",      label: "Lunch"      },
 ];
 
-function buildGroups(campers: CamperDoc[], mode: GroupBy): { key: string; label: string; badgeStyle: string; items: CamperDoc[] }[] {
+// Only used in dismissal + lunch modes (attendance is rendered inline)
+function buildGroups(campers: CamperDoc[], mode: "dismissal" | "lunch"): { key: string; label: string; badgeStyle: string; items: CamperDoc[] }[] {
   if (mode === "dismissal") {
     const map: Record<string, CamperDoc[]> = {};
     for (const k of TRANSPORT_ORDER) map[k] = [];
@@ -451,34 +453,28 @@ function buildGroups(campers: CamperDoc[], mode: GroupBy): { key: string; label:
       .filter(g => g.items.length > 0);
   }
 
-  // lunch
-  const map: Record<string, CamperDoc[]> = {};
+  // lunch — Buy vs Bring
+  const buys:  CamperDoc[] = [];
+  const brings: CamperDoc[] = [];
   for (const c of campers) {
-    const key = c.lunchInfo?.trim() || "Standard";
-    (map[key] ??= []).push(c);
+    if (c.lunchInfo?.trim()) brings.push(c);
+    else                      buys.push(c);
   }
-  const LUNCH_STYLE: Record<string, string> = {
-    Standard:      "bg-slate-100 text-slate-600",
-    Vegetarian:    "bg-green-100 text-green-700",
-    "Gluten free": "bg-yellow-100 text-yellow-700",
-    "No dairy":    "bg-blue-100 text-blue-700",
-    "No pork":     "bg-orange-100 text-orange-700",
-    "Nut free":    "bg-red-100 text-red-700",
-  };
-  return Object.entries(map)
-    .sort(([a], [b]) => a === "Standard" ? -1 : b === "Standard" ? 1 : a.localeCompare(b))
-    .map(([key, items]) => ({ key, label: key, badgeStyle: LUNCH_STYLE[key] ?? "bg-slate-100 text-slate-600", items }));
+  return [
+    { key: "buy",   label: "Buys Lunch",   badgeStyle: "bg-sky-100 text-sky-700",      items: buys   },
+    { key: "bring", label: "Brings Lunch",  badgeStyle: "bg-violet-100 text-violet-700", items: brings },
+  ].filter(g => g.items.length > 0);
 }
 
 function CounselorView({ staff }: { staff: StaffDoc }) {
   const bunk = staff.bunkAssignment ?? "";
   const roster        = useQuery(api.campers.getBunkRoster, bunk ? { bunk } : "skip");
   const checkIn       = useMutation(api.campers.confirmWithBunk);
-  const markAbsent    = useMutation(api.campers.markAbsent);
+  const doMarkAbsent  = useMutation(api.campers.markAbsent);
   const resetMorning  = useMutation(api.campers.resetMorningStatus);
   const [showPresent, setShowPresent] = useState(false);
   const [showAbsent,  setShowAbsent]  = useState(false);
-  const [groupBy,     setGroupBy]     = useState<GroupBy>("dismissal");
+  const [groupBy,     setGroupBy]     = useState<GroupBy>("attendance");
   const [selected,    setSelected]    = useState<CamperDoc | null>(null);
 
   if (!bunk) return (
@@ -493,7 +489,27 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
   const present      = roster.filter(c => c.bunkConfirmed);
   const absent       = roster.filter(c => c.arrivalStatus === "Absent");
   const called       = roster.filter(c => c.status === "Called" || c.status === "Assigned");
-  const groups       = buildGroups(notCheckedIn, groupBy);
+
+  // Shared card builders
+  const makeCard  = (c: CamperDoc) => (
+    <CamperCard key={c._id} camper={c}
+      onTap={() => setSelected(c)}
+      onCheckIn={() => checkIn({ id: c._id, staffName: staff.name })}
+      onMarkAbsent={() => doMarkAbsent({ id: c._id, staffName: staff.name })}
+    />
+  );
+  const makeAbsentRow    = (c: CamperDoc) => (
+    <AbsentRow key={c._id} camper={c}
+      onTap={() => setSelected(c)}
+      onUndo={() => resetMorning({ id: c._id })}
+    />
+  );
+  const makePresentRow   = (c: CamperDoc) => (
+    <ConfirmedRow key={c._id} camper={c}
+      onTap={() => setSelected(c)}
+      onUndo={() => resetMorning({ id: c._id })}
+    />
+  );
 
   return (
     <>
@@ -512,12 +528,11 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
 
         {/* Stat pills */}
         <div className="flex gap-2">
-          <Pill value={present.length}      label="Present"   color="green" />
-          <Pill value={absent.length}       label="Absent"    color="amber" />
-          <Pill value={notCheckedIn.length} label="Not In"    color="slate" />
+          <Pill value={present.length} label="Present" color="green" />
+          <Pill value={absent.length}  label="Absent"  color="amber" />
         </div>
 
-        {/* Group-by toggle */}
+        {/* View toggle */}
         <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5">
           {GROUP_BY_OPTIONS.map(opt => (
             <button key={opt.id} onClick={() => setGroupBy(opt.id)}
@@ -530,7 +545,7 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
           ))}
         </div>
 
-        {/* Called-for-pickup alert */}
+        {/* Called-for-pickup alert (always visible) */}
         {called.length > 0 && (
           <div className="bg-amber-50 border-2 border-amber-400 rounded-2xl p-4">
             <p className="text-amber-900 font-bold text-base flex items-center gap-2 mb-3">
@@ -552,84 +567,115 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
           </div>
         )}
 
-        {/* Not checked in list */}
-        {notCheckedIn.length > 0 && (
+        {/* ── ATTENDANCE VIEW ── */}
+        {groupBy === "attendance" && (
           <div className="space-y-5">
-            {groups.map(group => (
-              <div key={group.key}>
-                <div className="flex items-center gap-2 mb-2 px-1">
-                  <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${group.badgeStyle}`}>
-                    {group.label}
+            {/* Not Here section */}
+            {(notCheckedIn.length > 0 || absent.length > 0) && (
+              <div>
+                <div className="flex items-center gap-2 mb-3 px-1">
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">
+                    Not Here
                   </span>
-                  <span className="text-xs text-slate-400">{group.items.length}</span>
+                  <span className="text-xs text-slate-400">{notCheckedIn.length + absent.length}</span>
                 </div>
                 <div className="space-y-2">
-                  {group.items.map(c => (
-                    <CamperCard key={c._id} camper={c}
-                      onTap={() => setSelected(c)}
-                      onCheckIn={() => checkIn({ id: c._id, staffName: staff.name })}
-                      onMarkAbsent={() => markAbsent({ id: c._id, staffName: staff.name })}
-                    />
-                  ))}
+                  {notCheckedIn.map(makeCard)}
+                  {absent.map(makeAbsentRow)}
                 </div>
               </div>
-            ))}
-          </div>
-        )}
+            )}
 
-        {/* Absent section */}
-        {absent.length > 0 && (
-          <div>
-            <button onClick={() => setShowAbsent(v => !v)}
-              className="flex items-center gap-2 w-full py-3 px-1 text-sm font-semibold text-slate-500 active:text-slate-800">
-              <span className="w-5 h-5 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
-                <span className="text-amber-600 text-xs font-bold">{absent.length}</span>
-              </span>
-              {absent.length} absent
-              {showAbsent ? <ChevronUp size={15} className="ml-auto" /> : <ChevronDown size={15} className="ml-auto" />}
-            </button>
-            {showAbsent && (
-              <div className="space-y-1.5">
-                {absent.map(c => (
-                  <AbsentRow key={c._id} camper={c}
-                    onTap={() => setSelected(c)}
-                    onUndo={() => resetMorning({ id: c._id })}
-                  />
-                ))}
+            {/* Here section */}
+            {present.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-3 px-1">
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-green-100 text-green-700">
+                    Here
+                  </span>
+                  <span className="text-xs text-slate-400">{present.length}</span>
+                </div>
+                <div className="space-y-1.5">
+                  {present.map(makePresentRow)}
+                </div>
+              </div>
+            )}
+
+            {/* All clear */}
+            {notCheckedIn.length === 0 && absent.length === 0 && present.length > 0 && (
+              <div className="bg-green-50 border border-green-200 rounded-2xl p-6 text-center">
+                <Check size={32} className="text-green-500 mx-auto mb-2" />
+                <p className="font-bold text-green-800 text-lg">All {present.length} campers here!</p>
               </div>
             )}
           </div>
         )}
 
-        {/* Present section */}
-        {present.length > 0 && (
-          <div>
-            <button onClick={() => setShowPresent(v => !v)}
-              className="flex items-center gap-2 w-full py-3 px-1 text-sm font-semibold text-slate-500 active:text-slate-800">
-              <Check size={16} className="text-green-500" />
-              {present.length} present
-              {showPresent ? <ChevronUp size={15} className="ml-auto" /> : <ChevronDown size={15} className="ml-auto" />}
-            </button>
-            {showPresent && (
-              <div className="space-y-1.5">
-                {present.map(c => (
-                  <ConfirmedRow key={c._id} camper={c}
-                    onTap={() => setSelected(c)}
-                    onUndo={() => resetMorning({ id: c._id })}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+        {/* ── DISMISSAL / LUNCH VIEW ── */}
+        {groupBy !== "attendance" && (() => {
+          const groups = buildGroups(notCheckedIn, groupBy as "dismissal" | "lunch");
+          return (
+            <div className="space-y-4">
+              {/* Grouped not-checked-in */}
+              {notCheckedIn.length > 0 && (
+                <div className="space-y-5">
+                  {groups.map(group => (
+                    <div key={group.key}>
+                      <div className="flex items-center gap-2 mb-2 px-1">
+                        <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${group.badgeStyle}`}>
+                          {group.label}
+                        </span>
+                        <span className="text-xs text-slate-400">{group.items.length}</span>
+                      </div>
+                      <div className="space-y-2">
+                        {group.items.map(makeCard)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
-        {/* All checked in celebration */}
-        {notCheckedIn.length === 0 && absent.length === 0 && present.length > 0 && (
-          <div className="bg-green-50 border border-green-200 rounded-2xl p-6 text-center">
-            <Check size={32} className="text-green-500 mx-auto mb-2" />
-            <p className="font-bold text-green-800 text-lg">All {present.length} campers checked in!</p>
-          </div>
-        )}
+              {/* Absent (collapsible) */}
+              {absent.length > 0 && (
+                <div>
+                  <button onClick={() => setShowAbsent(v => !v)}
+                    className="flex items-center gap-2 w-full py-3 px-1 text-sm font-semibold text-slate-500 active:text-slate-800">
+                    <span className="w-5 h-5 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                      <span className="text-amber-600 text-xs font-bold">{absent.length}</span>
+                    </span>
+                    {absent.length} absent
+                    {showAbsent ? <ChevronUp size={15} className="ml-auto" /> : <ChevronDown size={15} className="ml-auto" />}
+                  </button>
+                  {showAbsent && (
+                    <div className="space-y-1.5">{absent.map(makeAbsentRow)}</div>
+                  )}
+                </div>
+              )}
+
+              {/* Present (collapsible) */}
+              {present.length > 0 && (
+                <div>
+                  <button onClick={() => setShowPresent(v => !v)}
+                    className="flex items-center gap-2 w-full py-3 px-1 text-sm font-semibold text-slate-500 active:text-slate-800">
+                    <Check size={16} className="text-green-500" />
+                    {present.length} present
+                    {showPresent ? <ChevronUp size={15} className="ml-auto" /> : <ChevronDown size={15} className="ml-auto" />}
+                  </button>
+                  {showPresent && (
+                    <div className="space-y-1.5">{present.map(makePresentRow)}</div>
+                  )}
+                </div>
+              )}
+
+              {notCheckedIn.length === 0 && absent.length === 0 && present.length > 0 && (
+                <div className="bg-green-50 border border-green-200 rounded-2xl p-6 text-center">
+                  <Check size={32} className="text-green-500 mx-auto mb-2" />
+                  <p className="font-bold text-green-800 text-lg">All {present.length} campers here!</p>
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode />}
