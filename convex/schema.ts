@@ -87,6 +87,9 @@ export default defineSchema({
     // ── logistics ──
     transportationType: v.optional(TRANSPORTATION_TYPE),
 
+    // ── photo ──
+    photoUrl: v.optional(v.string()),
+
     // ── daily attendance (reset each day) ──
     arrivalStatus: v.optional(v.union(v.literal("NotArrived"), v.literal("Arrived"))),
     arrivalType: v.optional(ARRIVAL_TYPE),
