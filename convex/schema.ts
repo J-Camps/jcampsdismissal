@@ -97,7 +97,7 @@ export default defineSchema({
     photoUrl: v.optional(v.string()),
 
     // ── daily attendance (reset each day) ──
-    arrivalStatus: v.optional(v.union(v.literal("NotArrived"), v.literal("Arrived"))),
+    arrivalStatus: v.optional(v.union(v.literal("NotArrived"), v.literal("Arrived"), v.literal("Absent"))),
     arrivalType: v.optional(ARRIVAL_TYPE),
     bunkConfirmed: v.optional(v.boolean()),
   })

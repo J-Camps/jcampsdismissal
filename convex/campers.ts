@@ -202,3 +202,30 @@ export const unconfirmWithBunk = mutation({
     await ctx.db.patch(id, { bunkConfirmed: false });
   },
 });
+
+// Mark a camper absent for the day (counselor)
+export const markAbsent = mutation({
+  args: { id: v.id("campers"), staffName: v.string() },
+  handler: async (ctx, { id, staffName }) => {
+    await ctx.db.patch(id, { arrivalStatus: "Absent", bunkConfirmed: false });
+    await ctx.db.insert("attendanceLogs", {
+      camperId: id,
+      date: today(),
+      checkpoint: "Arrival",
+      status: "Marked absent",
+      staffName,
+      timestamp: Date.now(),
+    });
+  },
+});
+
+// Reset a single camper's morning status back to "Not Checked In"
+export const resetMorningStatus = mutation({
+  args: { id: v.id("campers") },
+  handler: async (ctx, { id }) => {
+    await ctx.db.patch(id, {
+      arrivalStatus: undefined,
+      bunkConfirmed: false,
+    });
+  },
+});

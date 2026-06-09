@@ -228,10 +228,17 @@ function CamperDetailSheet({ camper, onClose, hideCode = false }: { camper: Camp
   const bg = avatarBg(camper.name);
   const initial = (camper.preferredName ?? camper.name).charAt(0).toUpperCase();
 
-  const checkpoints: { label: string; done: boolean; value?: string }[] = [
-    { label: "Arrived at camp",  done: !!(camper.arrivalStatus === "Arrived" || camper.bunkConfirmed), value: camper.arrivalType ?? undefined },
-    { label: "Confirmed with bunk", done: !!camper.bunkConfirmed },
-    { label: "Dismissal",        done: camper.status !== "Waiting", value: camper.status !== "Waiting" ? camper.status : undefined },
+  const isAbsent = camper.arrivalStatus === "Absent";
+  const checkpoints: { label: string; done: boolean; value?: string; warn?: boolean }[] = [
+    {
+      label: isAbsent ? "Marked absent" : (camper.bunkConfirmed ? "Checked in at bunk" : "Not checked in"),
+      done:  !!(camper.bunkConfirmed || isAbsent),
+      value: isAbsent ? "Absent" : undefined,
+      warn:  isAbsent,
+    },
+    { label: "Called for pickup", done: camper.status !== "Waiting", value: camper.status !== "Waiting" ? camper.status : undefined },
+    { label: "Runner assigned",   done: !!(camper.runner),           value: camper.runner ?? undefined },
+    { label: "Picked up",         done: camper.status === "Picked Up" || camper.status === "Dismissed" },
   ];
 
   return (
@@ -333,17 +340,22 @@ function CamperDetailSheet({ camper, onClose, hideCode = false }: { camper: Camp
               {checkpoints.map((cp, i) => (
                 <div key={i} className="flex items-center gap-3 px-4 py-3.5">
                   <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${
-                    cp.done ? "bg-green-100" : "bg-slate-100"
+                    cp.warn ? "bg-amber-100" : cp.done ? "bg-green-100" : "bg-slate-100"
                   }`}>
-                    {cp.done
-                      ? <Check size={14} className="text-green-600" />
-                      : <div className="w-2 h-2 rounded-full bg-slate-300" />}
+                    {cp.warn
+                      ? <AlertTriangle size={13} className="text-amber-600" />
+                      : cp.done
+                        ? <Check size={14} className="text-green-600" />
+                        : <div className="w-2 h-2 rounded-full bg-slate-300" />}
                   </div>
-                  <span className={`flex-1 text-sm font-medium ${cp.done ? "text-slate-800" : "text-slate-400"}`}>
+                  <span className={`flex-1 text-sm font-medium ${cp.warn ? "text-amber-700" : cp.done ? "text-slate-800" : "text-slate-400"}`}>
                     {cp.label}
                   </span>
-                  {cp.value && (
+                  {cp.value && !cp.warn && (
                     <span className="text-xs text-slate-500 font-medium">{cp.value}</span>
+                  )}
+                  {cp.warn && (
+                    <span className="text-xs font-bold text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full">Absent</span>
                   )}
                 </div>
               ))}
@@ -422,12 +434,11 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 // ─── Counselor View ───────────────────────────────────────────────────────────
 
-type GroupBy = "dismissal" | "lunch" | "attendance";
+type GroupBy = "dismissal" | "lunch";
 
 const GROUP_BY_OPTIONS: { id: GroupBy; label: string }[] = [
-  { id: "dismissal",  label: "Dismissal" },
-  { id: "lunch",      label: "Lunch"     },
-  { id: "attendance", label: "Attendance" },
+  { id: "dismissal", label: "Dismissal" },
+  { id: "lunch",     label: "Lunch"     },
 ];
 
 function buildGroups(campers: CamperDoc[], mode: GroupBy): { key: string; label: string; badgeStyle: string; items: CamperDoc[] }[] {
@@ -440,43 +451,35 @@ function buildGroups(campers: CamperDoc[], mode: GroupBy): { key: string; label:
       .filter(g => g.items.length > 0);
   }
 
-  if (mode === "lunch") {
-    const map: Record<string, CamperDoc[]> = {};
-    for (const c of campers) {
-      const key = c.lunchInfo?.trim() || "Standard";
-      (map[key] ??= []).push(c);
-    }
-    const LUNCH_STYLE: Record<string, string> = {
-      Standard:     "bg-slate-100 text-slate-600",
-      Vegetarian:   "bg-green-100 text-green-700",
-      "Gluten free":"bg-yellow-100 text-yellow-700",
-      "No dairy":   "bg-blue-100 text-blue-700",
-      "No pork":    "bg-orange-100 text-orange-700",
-      "Nut free":   "bg-red-100 text-red-700",
-    };
-    return Object.entries(map)
-      .sort(([a], [b]) => a === "Standard" ? -1 : b === "Standard" ? 1 : a.localeCompare(b))
-      .map(([key, items]) => ({ key, label: key, badgeStyle: LUNCH_STYLE[key] ?? "bg-slate-100 text-slate-600", items }));
+  // lunch
+  const map: Record<string, CamperDoc[]> = {};
+  for (const c of campers) {
+    const key = c.lunchInfo?.trim() || "Standard";
+    (map[key] ??= []).push(c);
   }
-
-  // attendance
-  const present  = campers.filter(c => c.arrivalStatus === "Arrived" || c.bunkConfirmed);
-  const absent   = campers.filter(c => c.arrivalStatus !== "Arrived" && !c.bunkConfirmed);
-  return [
-    { key: "present", label: "Present",     badgeStyle: "bg-green-100 text-green-700",  items: present },
-    { key: "absent",  label: "Not Arrived", badgeStyle: "bg-slate-100 text-slate-500",  items: absent  },
-  ].filter(g => g.items.length > 0);
+  const LUNCH_STYLE: Record<string, string> = {
+    Standard:      "bg-slate-100 text-slate-600",
+    Vegetarian:    "bg-green-100 text-green-700",
+    "Gluten free": "bg-yellow-100 text-yellow-700",
+    "No dairy":    "bg-blue-100 text-blue-700",
+    "No pork":     "bg-orange-100 text-orange-700",
+    "Nut free":    "bg-red-100 text-red-700",
+  };
+  return Object.entries(map)
+    .sort(([a], [b]) => a === "Standard" ? -1 : b === "Standard" ? 1 : a.localeCompare(b))
+    .map(([key, items]) => ({ key, label: key, badgeStyle: LUNCH_STYLE[key] ?? "bg-slate-100 text-slate-600", items }));
 }
 
 function CounselorView({ staff }: { staff: StaffDoc }) {
   const bunk = staff.bunkAssignment ?? "";
-  const roster    = useQuery(api.campers.getBunkRoster, bunk ? { bunk } : "skip");
-  const confirm   = useMutation(api.campers.confirmWithBunk);
-  const arrive    = useMutation(api.campers.updateArrival);
-  const unconfirm = useMutation(api.campers.unconfirmWithBunk);
-  const [showConfirmed, setShowConfirmed] = useState(false);
-  const [groupBy, setGroupBy] = useState<GroupBy>("dismissal");
-  const [selected, setSelected] = useState<CamperDoc | null>(null);
+  const roster        = useQuery(api.campers.getBunkRoster, bunk ? { bunk } : "skip");
+  const checkIn       = useMutation(api.campers.confirmWithBunk);
+  const markAbsent    = useMutation(api.campers.markAbsent);
+  const resetMorning  = useMutation(api.campers.resetMorningStatus);
+  const [showPresent, setShowPresent] = useState(false);
+  const [showAbsent,  setShowAbsent]  = useState(false);
+  const [groupBy,     setGroupBy]     = useState<GroupBy>("dismissal");
+  const [selected,    setSelected]    = useState<CamperDoc | null>(null);
 
   if (!bunk) return (
     <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
@@ -485,10 +488,12 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
   );
   if (roster === undefined) return <Loading />;
 
-  const confirmed   = roster.filter(c => c.bunkConfirmed);
-  const unconfirmed = roster.filter(c => !c.bunkConfirmed);
-  const called      = roster.filter(c => c.status === "Called" || c.status === "Assigned");
-  const groups      = buildGroups(unconfirmed, groupBy);
+  // Three buckets
+  const notCheckedIn = roster.filter(c => !c.bunkConfirmed && c.arrivalStatus !== "Absent");
+  const present      = roster.filter(c => c.bunkConfirmed);
+  const absent       = roster.filter(c => c.arrivalStatus === "Absent");
+  const called       = roster.filter(c => c.status === "Called" || c.status === "Assigned");
+  const groups       = buildGroups(notCheckedIn, groupBy);
 
   return (
     <>
@@ -496,20 +501,20 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
         {/* Bunk header */}
         <div className="flex items-baseline justify-between">
           <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{bunk}</h2>
-          <span className="text-slate-500 text-sm font-medium">{confirmed.length} / {roster.length}</span>
+          <span className="text-slate-500 text-sm font-medium">{present.length} / {roster.length}</span>
         </div>
 
         {/* Progress bar */}
         <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
           <div className="h-full rounded-full transition-all duration-500"
-            style={{ width: `${roster.length ? (confirmed.length / roster.length) * 100 : 0}%`, backgroundColor: "#5B8C9D" }} />
+            style={{ width: `${roster.length ? (present.length / roster.length) * 100 : 0}%`, backgroundColor: "#5B8C9D" }} />
         </div>
 
         {/* Stat pills */}
         <div className="flex gap-2">
-          <Pill value={roster.filter(c => c.arrivalStatus === "Arrived" || c.bunkConfirmed).length} label="Arrived"   color="green" />
-          <Pill value={confirmed.length}   label="Confirmed" color="blue"  />
-          <Pill value={unconfirmed.length} label="Pending"   color="slate" />
+          <Pill value={present.length}      label="Present"   color="green" />
+          <Pill value={absent.length}       label="Absent"    color="amber" />
+          <Pill value={notCheckedIn.length} label="Not In"    color="slate" />
         </div>
 
         {/* Group-by toggle */}
@@ -547,8 +552,8 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
           </div>
         )}
 
-        {/* Grouped pending list */}
-        {unconfirmed.length > 0 && (
+        {/* Not checked in list */}
+        {notCheckedIn.length > 0 && (
           <div className="space-y-5">
             {groups.map(group => (
               <div key={group.key}>
@@ -562,8 +567,8 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
                   {group.items.map(c => (
                     <CamperCard key={c._id} camper={c}
                       onTap={() => setSelected(c)}
-                      onConfirm={() => confirm({ id: c._id, staffName: staff.name })}
-                      onMarkArrived={() => arrive({ id: c._id, arrivalType: "WalkIn", staffName: staff.name })}
+                      onCheckIn={() => checkIn({ id: c._id, staffName: staff.name })}
+                      onMarkAbsent={() => markAbsent({ id: c._id, staffName: staff.name })}
                     />
                   ))}
                 </div>
@@ -572,21 +577,23 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
           </div>
         )}
 
-        {/* Confirmed section */}
-        {confirmed.length > 0 && (
+        {/* Absent section */}
+        {absent.length > 0 && (
           <div>
-            <button onClick={() => setShowConfirmed(v => !v)}
+            <button onClick={() => setShowAbsent(v => !v)}
               className="flex items-center gap-2 w-full py-3 px-1 text-sm font-semibold text-slate-500 active:text-slate-800">
-              <Check size={16} className="text-green-500" />
-              {confirmed.length} confirmed
-              {showConfirmed ? <ChevronUp size={15} className="ml-auto" /> : <ChevronDown size={15} className="ml-auto" />}
+              <span className="w-5 h-5 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                <span className="text-amber-600 text-xs font-bold">{absent.length}</span>
+              </span>
+              {absent.length} absent
+              {showAbsent ? <ChevronUp size={15} className="ml-auto" /> : <ChevronDown size={15} className="ml-auto" />}
             </button>
-            {showConfirmed && (
+            {showAbsent && (
               <div className="space-y-1.5">
-                {confirmed.map(c => (
-                  <ConfirmedRow key={c._id} camper={c}
+                {absent.map(c => (
+                  <AbsentRow key={c._id} camper={c}
                     onTap={() => setSelected(c)}
-                    onUnconfirm={() => unconfirm({ id: c._id })}
+                    onUndo={() => resetMorning({ id: c._id })}
                   />
                 ))}
               </div>
@@ -594,10 +601,33 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
           </div>
         )}
 
-        {unconfirmed.length === 0 && confirmed.length > 0 && (
+        {/* Present section */}
+        {present.length > 0 && (
+          <div>
+            <button onClick={() => setShowPresent(v => !v)}
+              className="flex items-center gap-2 w-full py-3 px-1 text-sm font-semibold text-slate-500 active:text-slate-800">
+              <Check size={16} className="text-green-500" />
+              {present.length} present
+              {showPresent ? <ChevronUp size={15} className="ml-auto" /> : <ChevronDown size={15} className="ml-auto" />}
+            </button>
+            {showPresent && (
+              <div className="space-y-1.5">
+                {present.map(c => (
+                  <ConfirmedRow key={c._id} camper={c}
+                    onTap={() => setSelected(c)}
+                    onUndo={() => resetMorning({ id: c._id })}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* All checked in celebration */}
+        {notCheckedIn.length === 0 && absent.length === 0 && present.length > 0 && (
           <div className="bg-green-50 border border-green-200 rounded-2xl p-6 text-center">
             <Check size={32} className="text-green-500 mx-auto mb-2" />
-            <p className="font-bold text-green-800 text-lg">All {confirmed.length} campers confirmed!</p>
+            <p className="font-bold text-green-800 text-lg">All {present.length} campers checked in!</p>
           </div>
         )}
       </div>
@@ -608,18 +638,17 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
 }
 
 function CamperCard({
-  camper, onTap, onConfirm, onMarkArrived,
+  camper, onTap, onCheckIn, onMarkAbsent,
 }: {
   camper: CamperDoc;
   onTap: () => void;
-  onConfirm: () => void;
-  onMarkArrived: () => void;
+  onCheckIn: () => void;
+  onMarkAbsent: () => void;
 }) {
   const name = camper.preferredName
     ? `${camper.preferredName}${camper.lastName ? " " + camper.lastName : ""}`
     : camper.name;
-  const isCalled  = camper.status === "Called" || camper.status === "Assigned";
-  const isArrived = camper.arrivalStatus === "Arrived";
+  const isCalled = camper.status === "Called" || camper.status === "Assigned";
   const bg = avatarBg(camper.name);
 
   return (
@@ -643,35 +672,58 @@ function CamperCard({
           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             {camper.grade     && <span className="text-xs text-slate-400">{camper.grade}</span>}
             {camper.lunchInfo && <span className="text-xs text-slate-500 flex items-center gap-0.5"><UtensilsCrossed size={10} />{camper.lunchInfo}</span>}
-            {isArrived && !camper.bunkConfirmed && <span className="text-xs text-blue-600 font-medium">Arrived</span>}
-            {isCalled  && <StatusBadge status={camper.status} />}
+            {isCalled         && <StatusBadge status={camper.status} />}
+            {!isCalled        && <span className="text-xs text-slate-400 font-medium">Not checked in</span>}
           </div>
         </div>
         <ArrowRight size={16} className="text-slate-300 flex-shrink-0" />
       </button>
 
-      {/* Action buttons */}
+      {/* Action row */}
       <div className="border-t border-slate-100 flex">
-        {!isArrived && (
-          <button onClick={onMarkArrived}
-            className="flex-1 py-3.5 text-sm font-semibold text-slate-600 bg-slate-50 active:bg-slate-100 border-r border-slate-100 transition-colors">
-            Mark Arrived
-          </button>
-        )}
-        <button onClick={onConfirm}
-          className="flex-1 py-3.5 text-sm font-bold text-white flex items-center justify-center gap-1.5 transition-colors"
+        <button onClick={onMarkAbsent}
+          className="px-5 py-3.5 text-sm font-semibold text-slate-400 active:text-amber-600 bg-white transition-colors border-r border-slate-100">
+          Absent
+        </button>
+        <button onClick={onCheckIn}
+          className="flex-1 py-3.5 text-sm font-bold text-white flex items-center justify-center gap-1.5 transition-colors active:opacity-80"
           style={{ backgroundColor: "#023B64" }}>
-          <Check size={15} /> Confirm with Bunk
+          <Check size={15} /> Check In
         </button>
       </div>
     </div>
   );
 }
 
-function ConfirmedRow({ camper, onTap, onUnconfirm }: {
+function AbsentRow({ camper, onTap, onUndo }: {
   camper: CamperDoc;
   onTap: () => void;
-  onUnconfirm: () => void;
+  onUndo: () => void;
+}) {
+  const name = camper.preferredName ?? camper.name;
+  return (
+    <div className="flex items-center gap-2 bg-amber-50 border border-amber-100 rounded-xl overflow-hidden">
+      <button onClick={onTap} className="flex items-center gap-3 flex-1 px-4 py-3 text-left active:bg-amber-100">
+        <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white text-sm font-bold overflow-hidden"
+          style={{ backgroundColor: avatarBg(camper.name) }}>
+          {camper.photoUrl
+            ? <img src={camper.photoUrl} alt={name} className="w-full h-full object-cover" />
+            : (camper.preferredName ?? camper.name).charAt(0).toUpperCase()}
+        </div>
+        <span className="flex-1 font-medium text-slate-700 text-sm">{name}</span>
+        <span className="text-xs font-semibold text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full flex-shrink-0">Absent</span>
+      </button>
+      <button onClick={onUndo} className="text-xs text-slate-400 active:text-slate-700 px-3 py-3 border-l border-amber-100">
+        Undo
+      </button>
+    </div>
+  );
+}
+
+function ConfirmedRow({ camper, onTap, onUndo }: {
+  camper: CamperDoc;
+  onTap: () => void;
+  onUndo: () => void;
 }) {
   const name = camper.preferredName ?? camper.name;
   return (
@@ -689,16 +741,17 @@ function ConfirmedRow({ camper, onTap, onUnconfirm }: {
             {TRANSPORT_LABEL[camper.transportationType]}
           </span>
         )}
+        <span className="text-xs font-semibold text-green-600 bg-green-100 px-2 py-0.5 rounded-full flex-shrink-0 ml-1">Present</span>
       </button>
-      <button onClick={onUnconfirm} className="text-xs text-slate-400 active:text-red-500 px-3 py-3 border-l border-green-100">
+      <button onClick={onUndo} className="text-xs text-slate-400 active:text-red-500 px-3 py-3 border-l border-green-100">
         Undo
       </button>
     </div>
   );
 }
 
-function Pill({ value, label, color }: { value: number; label: string; color: "green"|"blue"|"slate" }) {
-  const styles = { green:"bg-green-50 text-green-700 border-green-200", blue:"bg-blue-50 text-blue-700 border-blue-200", slate:"bg-slate-50 text-slate-600 border-slate-200" };
+function Pill({ value, label, color }: { value: number; label: string; color: "green"|"blue"|"slate"|"amber" }) {
+  const styles = { green:"bg-green-50 text-green-700 border-green-200", blue:"bg-blue-50 text-blue-700 border-blue-200", slate:"bg-slate-50 text-slate-600 border-slate-200", amber:"bg-amber-50 text-amber-700 border-amber-200" };
   return (
     <div className={`flex-1 border rounded-xl py-2.5 text-center ${styles[color]}`}>
       <p className="text-xl font-bold leading-none">{value}</p>
