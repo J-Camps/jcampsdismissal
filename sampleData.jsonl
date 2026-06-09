@@ -1,6 +1,6 @@
-{"name":"Jamie Cohen","bunk":"Bunk 3","code":"523","status":"Waiting"}
-{"name":"Jacob Cohen","bunk":"Bunk 7","code":"523","status":"Waiting"}
-{"name":"Maya Levin","bunk":"Bunk 2","code":"184","status":"Waiting"}
-{"name":"Eli Rosen","bunk":"Bunk 5","code":"376","status":"Waiting"}
-{"name":"Noah Rosen","bunk":"Bunk 5","code":"376","status":"Waiting"}
-{"name":"Ava Goldberg","bunk":"Bunk 1","code":"412","status":"Waiting"}
+{"name":"Jamie Cohen","preferredName":"Jamie","lastName":"Cohen","bunk":"Bunk 3","unit":"Lower Camp","grade":"4th","code":"523","status":"Waiting","campSection":"Lower","transportationType":"Carline","hasAllergies":true,"lunchInfo":"No nuts"}
+{"name":"Jacob Cohen","preferredName":"Jake","lastName":"Cohen","bunk":"Bunk 7","unit":"Upper Camp","grade":"8th","code":"523","status":"Waiting","campSection":"Upper","transportationType":"Carline"}
+{"name":"Maya Levin","preferredName":"Maya","lastName":"Levin","bunk":"Bunk 2","unit":"Lower Camp","grade":"3rd","code":"184","status":"Waiting","campSection":"Lower","transportationType":"Bus"}
+{"name":"Eli Rosen","preferredName":"Eli","lastName":"Rosen","bunk":"Bunk 5","unit":"Upper Camp","grade":"6th","code":"376","status":"Waiting","campSection":"Upper","transportationType":"Bus","hasNotes":true}
+{"name":"Noah Rosen","preferredName":"Noah","lastName":"Rosen","bunk":"Bunk 5","unit":"Upper Camp","grade":"7th","code":"376","status":"Waiting","campSection":"Upper","transportationType":"Bus"}
+{"name":"Ava Goldberg","preferredName":"Ava","lastName":"Goldberg","bunk":"Bunk 1","unit":"Lower Camp","grade":"2nd","code":"412","status":"Waiting","campSection":"Lower","transportationType":"AfterCare"}
