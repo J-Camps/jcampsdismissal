@@ -11,6 +11,9 @@ import {
   X, Hash, BookOpen, Bus, ArrowRight,
 } from "lucide-react";
 
+// ─── Brand colors (JCC Greater Boston) ───────────────────────────────────────
+// Navy #023B64 | Steel Blue #5B8C9D | Pearl #F6F1E9 | Silver Fog #8EB2CB
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const RUNNERS = ["Runner 1", "Runner 2", "Runner 3", "Runner 4"];
@@ -92,12 +95,12 @@ function LockScreen({ onUnlock }: { onUnlock: (s: StaffDoc) => void }) {
   }, [loading, staffResult]);
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-5">
+    <div className="min-h-screen flex items-center justify-center p-5" style={{ backgroundColor: "#F6F1E9" }}>
       <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-8 w-full max-w-xs text-center">
-        <div className="w-16 h-16 rounded-full bg-slate-900 flex items-center justify-center mx-auto mb-5">
+        <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-5" style={{ backgroundColor: "#023B64" }}>
           <Lock className="text-white" size={26} />
         </div>
-        <h1 className="text-2xl font-bold text-slate-900">JCamp</h1>
+        <h1 className="text-2xl font-bold" style={{ color: "#023B64" }}>JCamp</h1>
         <p className="text-slate-500 text-sm mt-1 mb-7">Enter your staff code</p>
         <input
           value={code}
@@ -105,13 +108,17 @@ function LockScreen({ onUnlock }: { onUnlock: (s: StaffDoc) => void }) {
           onKeyDown={e => e.key === "Enter" && handleUnlock()}
           inputMode="numeric" type="password" autoComplete="off" maxLength={6}
           placeholder="——"
-          className="w-full text-center text-3xl font-bold tracking-[0.35em] border-2 border-slate-200 rounded-2xl py-4 mb-4 focus:outline-none focus:border-slate-900 bg-slate-50"
+          className="w-full text-center text-3xl font-bold tracking-[0.35em] border-2 border-slate-200 rounded-2xl py-4 mb-4 focus:outline-none bg-slate-50"
+          style={{ outline: "none" }}
+          onFocus={e => (e.currentTarget.style.borderColor = "#023B64")}
+          onBlur={e => (e.currentTarget.style.borderColor = "")}
         />
         {error && <p className="text-sm text-red-500 mb-3 font-medium">{error}</p>}
         <button
           onClick={handleUnlock}
           disabled={loading || code.length === 0}
-          className="w-full bg-slate-900 text-white rounded-2xl py-4 text-base font-semibold active:bg-slate-700 disabled:opacity-40 transition-colors"
+          className="w-full text-white rounded-2xl py-4 text-base font-semibold disabled:opacity-40 transition-colors"
+          style={{ backgroundColor: "#023B64" }}
         >
           {loading ? "Checking…" : "Sign In"}
         </button>
@@ -124,7 +131,7 @@ function LockScreen({ onUnlock }: { onUnlock: (s: StaffDoc) => void }) {
 
 function RoleRouter({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void }) {
   const wrap = (child: React.ReactNode) => (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen" style={{ backgroundColor: "#F6F1E9" }}>
       <MobileHeader staff={staff} onLogout={onLogout} />
       <main className="px-3 py-5 max-w-lg mx-auto">{child}</main>
     </div>
@@ -143,14 +150,15 @@ function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => vo
     dispatcher:"Dispatcher", runner:"Runner", director:"Director", admin:"Admin",
   };
   return (
-    <header className="bg-white border-b border-slate-100 sticky top-0 z-20">
+    <header className="sticky top-0 z-20" style={{ backgroundColor: "#023B64" }}>
       <div className="max-w-lg mx-auto px-4 h-14 flex items-center gap-3">
-        <span className="font-bold text-slate-900 text-lg">JCamp</span>
-        <span className="text-sm text-slate-500 truncate flex-1">{staff.name}</span>
-        <span className="text-xs bg-slate-100 text-slate-500 px-2.5 py-1 rounded-full font-medium flex-shrink-0">
+        <span className="font-bold text-white text-lg tracking-tight">JCamp</span>
+        <span className="text-sm text-white/70 truncate flex-1">{staff.name}</span>
+        <span className="text-xs px-2.5 py-1 rounded-full font-medium flex-shrink-0"
+          style={{ backgroundColor: "rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.9)" }}>
           {labels[staff.role] ?? staff.role}
         </span>
-        <button onClick={onLogout} className="p-2 text-slate-400 active:text-slate-700 rounded-xl flex-shrink-0">
+        <button onClick={onLogout} className="p-2 text-white/60 active:text-white rounded-xl flex-shrink-0">
           <LogOut size={18} />
         </button>
       </div>
@@ -169,12 +177,12 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
   const tabs = allTabs.filter(t => (t.roles as readonly string[]).includes(staff.role));
   const [active, setActive] = useState<string>(tabs[0]?.id ?? "admin");
   return (
-    <div className="min-h-screen bg-slate-50 pb-20">
-      <header className="bg-white border-b border-slate-100 sticky top-0 z-20">
+    <div className="min-h-screen pb-20" style={{ backgroundColor: "#F6F1E9" }}>
+      <header className="sticky top-0 z-20" style={{ backgroundColor: "#023B64" }}>
         <div className="max-w-2xl mx-auto px-4 h-14 flex items-center gap-2">
-          <span className="font-bold text-slate-900 text-lg mr-auto">JCamp</span>
-          <span className="text-sm text-slate-500 hidden sm:block">{staff.name}</span>
-          <button onClick={onLogout} className="p-2 text-slate-400 rounded-xl active:bg-slate-100">
+          <span className="font-bold text-white text-lg tracking-tight mr-auto">JCamp</span>
+          <span className="text-sm text-white/70 hidden sm:block">{staff.name}</span>
+          <button onClick={onLogout} className="p-2 text-white/60 rounded-xl active:text-white">
             <LogOut size={18} />
           </button>
         </div>
@@ -193,7 +201,8 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
             const on = active === t.id;
             return (
               <button key={t.id} onClick={() => setActive(t.id)}
-                className={`flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 transition-colors ${on ? "text-slate-900" : "text-slate-400"}`}>
+                className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 transition-colors"
+                style={{ color: on ? "#023B64" : "#94a3b8" }}>
                 <Icon size={22} strokeWidth={on ? 2.5 : 1.8} />
                 <span className="text-[10px] font-medium leading-none mt-0.5">{t.label}</span>
               </button>
@@ -207,7 +216,7 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
 
 // ─── Camper Detail Sheet ──────────────────────────────────────────────────────
 
-function CamperDetailSheet({ camper, onClose }: { camper: CamperDoc; onClose: () => void }) {
+function CamperDetailSheet({ camper, onClose, hideCode = false }: { camper: CamperDoc; onClose: () => void; hideCode?: boolean }) {
   const logs = useQuery(api.attendanceLogs.getByCamper, {
     camperId: camper._id,
     date: today(),
@@ -302,7 +311,9 @@ function CamperDetailSheet({ camper, onClose }: { camper: CamperDoc; onClose: ()
               value={TRANSPORT_LABEL[camper.transportationType ?? ""] ?? "—"}
               badge={camper.transportationType ? { label: TRANSPORT_LABEL[camper.transportationType], style: TRANSPORT_STYLE[camper.transportationType] } : undefined}
             />
-            <InfoTile icon={<Hash size={16} />}      label="Pickup Code"  value={`#${camper.code}`}  mono />
+            {!hideCode && (
+              <InfoTile icon={<Hash size={16} />} label="Pickup Code" value={`#${camper.code}`} mono />
+            )}
           </div>
 
           {/* Lunch */}
@@ -412,6 +423,52 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 // ─── Counselor View ───────────────────────────────────────────────────────────
 
+type GroupBy = "dismissal" | "lunch" | "attendance";
+
+const GROUP_BY_OPTIONS: { id: GroupBy; label: string }[] = [
+  { id: "dismissal",  label: "Dismissal" },
+  { id: "lunch",      label: "Lunch"     },
+  { id: "attendance", label: "Attendance" },
+];
+
+function buildGroups(campers: CamperDoc[], mode: GroupBy): { key: string; label: string; badgeStyle: string; items: CamperDoc[] }[] {
+  if (mode === "dismissal") {
+    const map: Record<string, CamperDoc[]> = {};
+    for (const k of TRANSPORT_ORDER) map[k] = [];
+    for (const c of campers) (map[c.transportationType ?? "Other"] ??= []).push(c);
+    return TRANSPORT_ORDER
+      .map(k => ({ key: k, label: TRANSPORT_LABEL[k] ?? k, badgeStyle: TRANSPORT_STYLE[k] ?? "bg-slate-100 text-slate-600", items: map[k] ?? [] }))
+      .filter(g => g.items.length > 0);
+  }
+
+  if (mode === "lunch") {
+    const map: Record<string, CamperDoc[]> = {};
+    for (const c of campers) {
+      const key = c.lunchInfo?.trim() || "Standard";
+      (map[key] ??= []).push(c);
+    }
+    const LUNCH_STYLE: Record<string, string> = {
+      Standard:     "bg-slate-100 text-slate-600",
+      Vegetarian:   "bg-green-100 text-green-700",
+      "Gluten free":"bg-yellow-100 text-yellow-700",
+      "No dairy":   "bg-blue-100 text-blue-700",
+      "No pork":    "bg-orange-100 text-orange-700",
+      "Nut free":   "bg-red-100 text-red-700",
+    };
+    return Object.entries(map)
+      .sort(([a], [b]) => a === "Standard" ? -1 : b === "Standard" ? 1 : a.localeCompare(b))
+      .map(([key, items]) => ({ key, label: key, badgeStyle: LUNCH_STYLE[key] ?? "bg-slate-100 text-slate-600", items }));
+  }
+
+  // attendance
+  const present  = campers.filter(c => c.arrivalStatus === "Arrived" || c.bunkConfirmed);
+  const absent   = campers.filter(c => c.arrivalStatus !== "Arrived" && !c.bunkConfirmed);
+  return [
+    { key: "present", label: "Present",     badgeStyle: "bg-green-100 text-green-700",  items: present },
+    { key: "absent",  label: "Not Arrived", badgeStyle: "bg-slate-100 text-slate-500",  items: absent  },
+  ].filter(g => g.items.length > 0);
+}
+
 function CounselorView({ staff }: { staff: StaffDoc }) {
   const bunk = staff.bunkAssignment ?? "";
   const roster    = useQuery(api.campers.getBunkRoster, bunk ? { bunk } : "skip");
@@ -419,6 +476,7 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
   const arrive    = useMutation(api.campers.updateArrival);
   const unconfirm = useMutation(api.campers.unconfirmWithBunk);
   const [showConfirmed, setShowConfirmed] = useState(false);
+  const [groupBy, setGroupBy] = useState<GroupBy>("dismissal");
   const [selected, setSelected] = useState<CamperDoc | null>(null);
 
   if (!bunk) return (
@@ -431,30 +489,44 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
   const confirmed   = roster.filter(c => c.bunkConfirmed);
   const unconfirmed = roster.filter(c => !c.bunkConfirmed);
   const called      = roster.filter(c => c.status === "Called" || c.status === "Assigned");
-
-  const groups: Record<string, CamperDoc[]> = {};
-  for (const k of TRANSPORT_ORDER) groups[k] = [];
-  for (const c of unconfirmed) (groups[c.transportationType ?? "Other"] ??= []).push(c);
+  const groups      = buildGroups(unconfirmed, groupBy);
 
   return (
     <>
       <div className="space-y-4">
+        {/* Bunk header */}
         <div className="flex items-baseline justify-between">
-          <h2 className="text-2xl font-bold text-slate-900">{bunk}</h2>
+          <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{bunk}</h2>
           <span className="text-slate-500 text-sm font-medium">{confirmed.length} / {roster.length}</span>
         </div>
 
+        {/* Progress bar */}
         <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-          <div className="h-full bg-green-500 rounded-full transition-all duration-500"
-            style={{ width: `${roster.length ? (confirmed.length / roster.length) * 100 : 0}%` }} />
+          <div className="h-full rounded-full transition-all duration-500"
+            style={{ width: `${roster.length ? (confirmed.length / roster.length) * 100 : 0}%`, backgroundColor: "#5B8C9D" }} />
         </div>
 
+        {/* Stat pills */}
         <div className="flex gap-2">
           <Pill value={roster.filter(c => c.arrivalStatus === "Arrived" || c.bunkConfirmed).length} label="Arrived"   color="green" />
           <Pill value={confirmed.length}   label="Confirmed" color="blue"  />
           <Pill value={unconfirmed.length} label="Pending"   color="slate" />
         </div>
 
+        {/* Group-by toggle */}
+        <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5">
+          {GROUP_BY_OPTIONS.map(opt => (
+            <button key={opt.id} onClick={() => setGroupBy(opt.id)}
+              className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors"
+              style={groupBy === opt.id
+                ? { backgroundColor: "#023B64", color: "#fff" }
+                : { color: "#64748b" }}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Called-for-pickup alert */}
         {called.length > 0 && (
           <div className="bg-amber-50 border-2 border-amber-400 rounded-2xl p-4">
             <p className="text-amber-900 font-bold text-base flex items-center gap-2 mb-3">
@@ -476,34 +548,32 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
           </div>
         )}
 
+        {/* Grouped pending list */}
         {unconfirmed.length > 0 && (
           <div className="space-y-5">
-            {TRANSPORT_ORDER.map(group => {
-              const campers = groups[group];
-              if (!campers?.length) return null;
-              return (
-                <div key={group}>
-                  <div className="flex items-center gap-2 mb-2 px-1">
-                    <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${TRANSPORT_STYLE[group] ?? "bg-slate-100 text-slate-600"}`}>
-                      {TRANSPORT_LABEL[group] ?? group}
-                    </span>
-                    <span className="text-xs text-slate-400">{campers.length}</span>
-                  </div>
-                  <div className="space-y-2">
-                    {campers.map(c => (
-                      <CamperCard key={c._id} camper={c}
-                        onTap={() => setSelected(c)}
-                        onConfirm={() => confirm({ id: c._id, staffName: staff.name })}
-                        onMarkArrived={() => arrive({ id: c._id, arrivalType: "WalkIn", staffName: staff.name })}
-                      />
-                    ))}
-                  </div>
+            {groups.map(group => (
+              <div key={group.key}>
+                <div className="flex items-center gap-2 mb-2 px-1">
+                  <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${group.badgeStyle}`}>
+                    {group.label}
+                  </span>
+                  <span className="text-xs text-slate-400">{group.items.length}</span>
                 </div>
-              );
-            })}
+                <div className="space-y-2">
+                  {group.items.map(c => (
+                    <CamperCard key={c._id} camper={c}
+                      onTap={() => setSelected(c)}
+                      onConfirm={() => confirm({ id: c._id, staffName: staff.name })}
+                      onMarkArrived={() => arrive({ id: c._id, arrivalType: "WalkIn", staffName: staff.name })}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
+        {/* Confirmed section */}
         {confirmed.length > 0 && (
           <div>
             <button onClick={() => setShowConfirmed(v => !v)}
@@ -533,7 +603,7 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
         )}
       </div>
 
-      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} />}
+      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode />}
     </>
   );
 }
@@ -590,7 +660,8 @@ function CamperCard({
           </button>
         )}
         <button onClick={onConfirm}
-          className="flex-1 py-3.5 text-sm font-bold text-white bg-slate-900 active:bg-slate-700 flex items-center justify-center gap-1.5 transition-colors">
+          className="flex-1 py-3.5 text-sm font-bold text-white flex items-center justify-center gap-1.5 transition-colors"
+          style={{ backgroundColor: "#023B64" }}>
           <Check size={15} /> Confirm with Bunk
         </button>
       </div>
@@ -659,7 +730,9 @@ function Caller({ source }: { source: "Carline" | "Walk-Up" }) {
           <input value={entry}
             onChange={e => setEntry(e.target.value.replace(/\D/g, "").slice(0, 3))}
             placeholder="0 0 0" inputMode="numeric"
-            className="w-full text-center text-5xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-2xl py-5 focus:outline-none focus:border-slate-900 bg-slate-50" />
+            className="w-full text-center text-5xl font-bold tracking-[0.4em] border-2 border-slate-200 rounded-2xl py-5 focus:outline-none bg-slate-50"
+            onFocus={e => (e.currentTarget.style.borderColor = "#023B64")}
+            onBlur={e => (e.currentTarget.style.borderColor = "")} />
 
           {entry.length === 3 && matched !== undefined && matched.length === 0 && (
             <p className="text-center text-slate-500 mt-3 text-sm">No campers found for code {entry}.</p>
@@ -683,7 +756,8 @@ function Caller({ source }: { source: "Carline" | "Walk-Up" }) {
                 </button>
               ))}
               <button onClick={call}
-                className="w-full bg-amber-500 active:bg-amber-600 text-white rounded-2xl py-4 font-bold text-base mt-2 transition-colors">
+                className="w-full text-white rounded-2xl py-4 font-bold text-base mt-2 transition-colors"
+                style={{ backgroundColor: "#023B64" }}>
                 Call Campers
               </button>
             </div>
@@ -738,7 +812,8 @@ function Dispatcher() {
               <div className="border-t border-slate-100 px-3 py-2.5 flex gap-2 flex-wrap items-center">
                 {RUNNERS.map(r => (
                   <button key={r} onClick={() => assign({ id: c._id, runner: r })}
-                    className={`px-3.5 py-2 rounded-xl text-sm font-bold transition-colors ${c.runner === r ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700 active:bg-slate-200"}`}>
+                    className={`px-3.5 py-2 rounded-xl text-sm font-bold transition-colors ${c.runner === r ? "text-white" : "bg-slate-100 text-slate-700 active:bg-slate-200"}`}
+                    style={c.runner === r ? { backgroundColor: "#023B64" } : undefined}>
                     {r.replace("Runner ", "R")}
                   </button>
                 ))}
@@ -796,7 +871,8 @@ function RunnerView({ runnerName }: { runnerName: string }) {
               </button>
               {c.status === "Assigned" && (
                 <button onClick={() => pickUp({ id: c._id })}
-                  className="w-full bg-violet-600 active:bg-violet-700 text-white py-4 font-bold text-base flex items-center justify-center gap-2">
+                  className="w-full text-white py-4 font-bold text-base flex items-center justify-center gap-2"
+                  style={{ backgroundColor: "#5B8C9D" }}>
                   <Check size={18} /> Picked Up
                 </button>
               )}
@@ -886,7 +962,9 @@ function Admin() {
           <Search size={17} className="absolute left-3.5 top-3.5 text-slate-400" />
           <input value={q} onChange={e => setQ(e.target.value)}
             placeholder="Search name, bunk, code…"
-            className="w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl focus:outline-none focus:border-slate-900 text-sm" />
+            className="w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl focus:outline-none text-sm"
+            onFocus={e => (e.currentTarget.style.borderColor = "#023B64")}
+            onBlur={e => (e.currentTarget.style.borderColor = "")} />
         </div>
 
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
