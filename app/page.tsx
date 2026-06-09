@@ -97,11 +97,10 @@ function LockScreen({ onUnlock }: { onUnlock: (s: StaffDoc) => void }) {
   return (
     <div className="min-h-screen flex items-center justify-center p-5" style={{ backgroundColor: "#F6F1E9" }}>
       <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-8 w-full max-w-xs text-center">
-        <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-5" style={{ backgroundColor: "#023B64" }}>
-          <Lock className="text-white" size={26} />
+        <div className="flex justify-center mb-2">
+          <img src="/jcc-logo.png" alt="JCC Camps" className="h-14 w-auto" />
         </div>
-        <h1 className="text-2xl font-bold" style={{ color: "#023B64" }}>JCamp</h1>
-        <p className="text-slate-500 text-sm mt-1 mb-7">Enter your staff code</p>
+        <p className="text-slate-500 text-sm mt-2 mb-7">Enter your staff code</p>
         <input
           value={code}
           onChange={e => { setCode(e.target.value.replace(/\D/g, "")); setError(""); }}
@@ -152,7 +151,7 @@ function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => vo
   return (
     <header className="sticky top-0 z-20" style={{ backgroundColor: "#023B64" }}>
       <div className="max-w-lg mx-auto px-4 h-14 flex items-center gap-3">
-        <span className="font-bold text-white text-lg tracking-tight">JCamp</span>
+        <img src="/jcc-logo.png" alt="JCC Camps" className="h-9 w-auto flex-shrink-0" style={{ filter: "brightness(0) invert(1)" }} />
         <span className="text-sm text-white/70 truncate flex-1">{staff.name}</span>
         <span className="text-xs px-2.5 py-1 rounded-full font-medium flex-shrink-0"
           style={{ backgroundColor: "rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.9)" }}>
@@ -180,7 +179,7 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
     <div className="min-h-screen pb-20" style={{ backgroundColor: "#F6F1E9" }}>
       <header className="sticky top-0 z-20" style={{ backgroundColor: "#023B64" }}>
         <div className="max-w-2xl mx-auto px-4 h-14 flex items-center gap-2">
-          <span className="font-bold text-white text-lg tracking-tight mr-auto">JCamp</span>
+          <img src="/jcc-logo.png" alt="JCC Camps" className="h-9 w-auto mr-auto flex-shrink-0" style={{ filter: "brightness(0) invert(1)" }} />
           <span className="text-sm text-white/70 hidden sm:block">{staff.name}</span>
           <button onClick={onLogout} className="p-2 text-white/60 rounded-xl active:text-white">
             <LogOut size={18} />

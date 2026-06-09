@@ -1,21 +1,31 @@
-{"name":"Sarah Johnson","code":"4521","role":"counselor","bunkAssignment":"Bunk 1"}
-{"name":"Mike Chen","code":"7832","role":"counselor","bunkAssignment":"Bunk 2"}
-{"name":"Rachel Green","code":"3309","role":"counselor","bunkAssignment":"Bunk 3"}
-{"name":"Tom Willis","code":"6614","role":"counselor","bunkAssignment":"Bunk 4"}
-{"name":"Emma Park","code":"2278","role":"counselor","bunkAssignment":"Bunk 5"}
-{"name":"Jess Rivera","code":"5533","role":"counselor","bunkAssignment":"Bunk 6"}
-{"name":"Ari Bloom","code":"8847","role":"counselor","bunkAssignment":"Bunk 7"}
-{"name":"Dana Levy","code":"1192","role":"counselor","bunkAssignment":"Bunk 8"}
-{"name":"Ben Katz","code":"9965","role":"counselor","bunkAssignment":"Bunk 9"}
-{"name":"Sam Cohen","code":"4480","role":"counselor","bunkAssignment":"Bunk 10"}
-{"name":"Leah Rosen","code":"7723","role":"counselor","bunkAssignment":"Bunk 11"}
-{"name":"Noah Stein","code":"3356","role":"counselor","bunkAssignment":"Bunk 12"}
-{"name":"David Kim","code":"1856","role":"dispatcher"}
-{"name":"Alex Rivera","code":"9043","role":"carline"}
-{"name":"Jordan Lee","code":"5517","role":"walkup"}
-{"name":"Chris Brown","code":"3321","role":"runner","runnerLabel":"Runner 1"}
-{"name":"Morgan Davis","code":"6628","role":"runner","runnerLabel":"Runner 2"}
-{"name":"Taylor Smith","code":"8891","role":"runner","runnerLabel":"Runner 3"}
-{"name":"Jamie Wilson","code":"2265","role":"runner","runnerLabel":"Runner 4"}
-{"name":"Director Sam","code":"0001","role":"director"}
-{"name":"Admin","code":"9999","role":"admin"}
+{"name": "Talia Green", "code": "6305", "role": "counselor", "bunkAssignment": "Asher"}
+{"name": "Jonah Weiss", "code": "3471", "role": "counselor", "bunkAssignment": "Batsheva"}
+{"name": "Sara Bloom", "code": "7468", "role": "counselor", "bunkAssignment": "Boaz"}
+{"name": "Eli Rosen", "code": "1791", "role": "counselor", "bunkAssignment": "Dan"}
+{"name": "Maya Katz", "code": "2186", "role": "counselor", "bunkAssignment": "Esther"}
+{"name": "Noah Feldman", "code": "9779", "role": "counselor", "bunkAssignment": "Gad"}
+{"name": "Rachel Silver", "code": "2542", "role": "counselor", "bunkAssignment": "Golda"}
+{"name": "Ethan Cohen", "code": "6991", "role": "counselor", "bunkAssignment": "Hannah"}
+{"name": "Leah Bernstein", "code": "1950", "role": "counselor", "bunkAssignment": "Issachar"}
+{"name": "Ari Shapiro", "code": "9313", "role": "counselor", "bunkAssignment": "Joseph"}
+{"name": "Dina Goldstein", "code": "4517", "role": "counselor", "bunkAssignment": "Judah"}
+{"name": "Jake Levy", "code": "1614", "role": "counselor", "bunkAssignment": "Levi"}
+{"name": "Miriam Stern", "code": "2408", "role": "counselor", "bunkAssignment": "Leah"}
+{"name": "Sam Horowitz", "code": "8104", "role": "counselor", "bunkAssignment": "Miriam"}
+{"name": "Yael Friedman", "code": "7851", "role": "counselor", "bunkAssignment": "Naphtali"}
+{"name": "Caleb Rubin", "code": "2144", "role": "counselor", "bunkAssignment": "Rachel"}
+{"name": "Shira Marcus", "code": "4943", "role": "counselor", "bunkAssignment": "Reuben"}
+{"name": "Ben Hoffman", "code": "2486", "role": "counselor", "bunkAssignment": "Sarah"}
+{"name": "Noa Schwartz", "code": "7955", "role": "counselor", "bunkAssignment": "Simeon"}
+{"name": "Rafi Blum", "code": "1968", "role": "counselor", "bunkAssignment": "Zipporah"}
+{"name": "Dana Epstein", "code": "3028", "role": "counselor", "bunkAssignment": "Zebulon"}
+{"name": "Lior Goldman", "code": "4657", "role": "counselor", "bunkAssignment": "Aaron"}
+{"name": "Director Sam", "code": "0001", "role": "director"}
+{"name": "Admin", "code": "9999", "role": "admin"}
+{"name": "Alex Rivera", "code": "9043", "role": "carline"}
+{"name": "Jordan Lee", "code": "5517", "role": "walkup"}
+{"name": "David Kim", "code": "1856", "role": "dispatcher"}
+{"name": "Chris Brown", "code": "2013", "role": "runner", "runnerLabel": "Runner 1"}
+{"name": "Morgan Davis", "code": "7499", "role": "runner", "runnerLabel": "Runner 2"}
+{"name": "Taylor Smith", "code": "1812", "role": "runner", "runnerLabel": "Runner 3"}
+{"name": "Jamie Wilson", "code": "4622", "role": "runner", "runnerLabel": "Runner 4"}

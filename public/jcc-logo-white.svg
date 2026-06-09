@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" fill="none">
+  <!-- Emblem circle (white border) -->
+  <circle cx="42" cy="40" r="38" stroke="rgba(255,255,255,0.4)" stroke-width="1.5" fill="rgba(255,255,255,0.12)"/>
+
+  <!-- J body -->
+  <rect x="38" y="18" width="14" height="36" rx="2" fill="white"/>
+  <!-- J hook -->
+  <path d="M38 48 Q38 62 24 62 Q16 62 14 56 L20 53 Q21 58 24 58 Q32 58 32 48 L32 18 L38 18 Z" fill="white"/>
+
+  <!-- Wave (semi-transparent white) -->
+  <clipPath id="circ2"><circle cx="42" cy="40" r="38"/></clipPath>
+  <g clip-path="url(#circ2)">
+    <path d="M4 62 Q14 56 24 62 Q34 68 44 62 Q54 56 64 62 Q74 68 80 64 L80 80 L4 80 Z" fill="rgba(255,255,255,0.25)"/>
+  </g>
+
+  <!-- Sun circle -->
+  <circle cx="54" cy="26" r="7" fill="#F2A900"/>
+
+  <!-- Sun rays -->
+  <g stroke="#F2A900" stroke-width="2" stroke-linecap="round">
+    <line x1="54" y1="14" x2="54" y2="10"/>
+    <line x1="63" y1="17" x2="66" y2="14"/>
+    <line x1="66" y1="26" x2="70" y2="26"/>
+    <line x1="63" y1="35" x2="66" y2="38"/>
+    <line x1="44" y1="17" x2="41" y2="14"/>
+  </g>
+
+  <!-- CAMPS -->
+  <text x="92" y="52" font-family="Arial, sans-serif" font-weight="900" font-size="40" fill="white" letter-spacing="-0.5">CAMPS</text>
+
+  <!-- JCC GREATER BOSTON -->
+  <text x="93" y="68" font-family="Arial, sans-serif" font-weight="700" font-size="13" fill="rgba(255,255,255,0.8)" letter-spacing="1.5">JCC GREATER BOSTON</text>
+</svg>

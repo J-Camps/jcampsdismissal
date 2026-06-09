@@ -27,8 +27,14 @@ export const ARRIVAL_TYPE = v.union(
 );
 
 export const CAMP_SECTION = v.union(
-  v.literal("Upper"),
   v.literal("Lower"),
+  v.literal("Middle"),
+  v.literal("Upper"),
+  v.literal("CIT"),
+  v.literal("Swim"),
+  v.literal("Sports"),
+  v.literal("Tennis"),
+  v.literal("Specialty"),
 );
 
 export const STAFF_ROLE = v.union(
@@ -77,7 +83,7 @@ export default defineSchema({
     lastName: v.optional(v.string()),
     unit: v.optional(v.string()),
     grade: v.optional(v.string()),
-    campSection: v.optional(CAMP_SECTION), // "Upper" | "Lower"
+    campSection: v.optional(CAMP_SECTION), // Lower | Middle | Upper | CIT | Swim | Sports | Tennis | Specialty
 
     // ── flag fields ──
     hasAllergies: v.optional(v.boolean()),
