@@ -1,6 +1,6 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { ATTENDANCE_STATUS } from "./schema";
+import { ATTENDANCE_STATUS, LUNCH_TYPE, DISMISSAL_ROUTE, MORNING_STAGE } from "./schema";
 
 export const list = query({
   args: {},
@@ -117,6 +117,10 @@ export const resetDay = mutation({
         status: "Waiting", callSource: undefined, runner: undefined, note: undefined,
         tCalled: undefined, tAssigned: undefined, tPickedUp: undefined, tDismissed: undefined,
         attendanceStatus: undefined,
+        morningStage: c.morningRoute ? "NotArrived" : undefined,
+        tMorningStage: undefined,
+        sentToBus: undefined, sentToAfterCare: undefined, afterCareConfirmed: undefined,
+        earlyDismissal: undefined,
       });
     }
   },
@@ -126,5 +130,127 @@ export const setAttendanceStatus = mutation({
   args: { id: v.id("campers"), attendanceStatus: ATTENDANCE_STATUS },
   handler: async (ctx, { id, attendanceStatus }) => {
     await ctx.db.patch(id, { attendanceStatus });
+  },
+});
+
+// ---------------------------------------------------------------------
+// Attendance + dismissal redesign: bunks, presence, morning/afternoon flow
+// ---------------------------------------------------------------------
+
+export const getBunks = query({
+  args: {},
+  handler: async (ctx) => {
+    const all = await ctx.db.query("campers").collect();
+    return Array.from(new Set(all.map((c) => c.bunk))).sort();
+  },
+});
+
+export const byBunk = query({
+  args: { bunk: v.string() },
+  handler: async (ctx, { bunk }) => {
+    return await ctx.db
+      .query("campers")
+      .withIndex("by_bunk", (q) => q.eq("bunk", bunk))
+      .collect();
+  },
+});
+
+export const busOverview = query({
+  args: {},
+  handler: async (ctx) => {
+    const all = await ctx.db.query("campers").collect();
+    const buses: Record<string, typeof all> = {};
+    for (const c of all) {
+      if (c.morningRoute === "Bus" && c.busRoute) {
+        (buses[c.busRoute] ??= []).push(c);
+      }
+    }
+    return buses;
+  },
+});
+
+export const setLunchType = mutation({
+  args: { id: v.id("campers"), lunchType: LUNCH_TYPE },
+  handler: async (ctx, { id, lunchType }) => {
+    await ctx.db.patch(id, { lunchType });
+  },
+});
+
+export const setDismissalRoute = mutation({
+  args: { id: v.id("campers"), dismissalRoute: v.optional(DISMISSAL_ROUTE) },
+  handler: async (ctx, { id, dismissalRoute }) => {
+    await ctx.db.patch(id, { dismissalRoute });
+  },
+});
+
+export const setDismissalRouteOverride = mutation({
+  args: { id: v.id("campers"), dismissalRouteOverride: v.optional(DISMISSAL_ROUTE) },
+  handler: async (ctx, { id, dismissalRouteOverride }) => {
+    await ctx.db.patch(id, { dismissalRouteOverride });
+  },
+});
+
+export const setMorningRoute = mutation({
+  args: {
+    id: v.id("campers"),
+    morningRoute: v.optional(v.union(
+      v.literal("Bus"), v.literal("Carline"), v.literal("WalkUp"), v.literal("BeforeCare"),
+    )),
+    busRoute: v.optional(v.string()),
+  },
+  handler: async (ctx, { id, morningRoute, busRoute }) => {
+    await ctx.db.patch(id, { morningRoute, busRoute, morningStage: morningRoute ? "NotArrived" : undefined });
+  },
+});
+
+export const setMorningStage = mutation({
+  args: { id: v.id("campers"), stage: MORNING_STAGE },
+  handler: async (ctx, { id, stage }) => {
+    await ctx.db.patch(id, { morningStage: stage, tMorningStage: Date.now() });
+  },
+});
+
+export const toggleAbsent = mutation({
+  args: { id: v.id("campers") },
+  handler: async (ctx, { id }) => {
+    const c = await ctx.db.get(id);
+    if (!c) return;
+    const isAbsent = c.attendanceStatus === "Absent";
+    await ctx.db.patch(id, { attendanceStatus: isAbsent ? "Present" : "Absent" });
+  },
+});
+
+export const setEarlyDismissal = mutation({
+  args: { id: v.id("campers"), earlyDismissal: v.boolean() },
+  handler: async (ctx, { id, earlyDismissal }) => {
+    await ctx.db.patch(id, { earlyDismissal });
+  },
+});
+
+export const sendToBus = mutation({
+  args: { id: v.id("campers") },
+  handler: async (ctx, { id }) => {
+    await ctx.db.patch(id, { sentToBus: true });
+  },
+});
+
+export const sendToAfterCare = mutation({
+  args: { id: v.id("campers") },
+  handler: async (ctx, { id }) => {
+    await ctx.db.patch(id, { sentToAfterCare: true });
+  },
+});
+
+export const confirmAfterCare = mutation({
+  args: { id: v.id("campers") },
+  handler: async (ctx, { id }) => {
+    await ctx.db.patch(id, { afterCareConfirmed: true });
+  },
+});
+
+export const undoAfternoon = mutation({
+  args: { id: v.id("campers") },
+  handler: async (ctx, { id }) => {
+    await ctx.db.patch(id, { sentToBus: undefined, sentToAfterCare: undefined, afterCareConfirmed: undefined });
   },
 });

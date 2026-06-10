@@ -5,8 +5,9 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
 import {
-  Car, Footprints, Radio, User, Settings, Lock, Search, RotateCcw,
-  Check, ChevronRight, AlertCircle, Clock, MapPin, ClipboardList,
+  Car, Footprints, Radio, User, Users, Settings, Lock, Search, RotateCcw,
+  Check, ChevronRight, AlertCircle, Clock, MapPin, ClipboardList, Bus,
+  Sunrise, Sunset, Undo2,
 } from "lucide-react";
 
 const ACCESS_CODE = "1234";
@@ -29,6 +30,41 @@ const ATTENDANCE_STYLE: Record<string, string> = {
   "Expected Late": "bg-amber-100 text-amber-700",
   "Dismissed Early": "bg-blue-100 text-blue-700",
   "Already Dismissed": "bg-slate-200 text-slate-600",
+};
+
+const LUNCH_OPTIONS = ["Bought", "Brought"] as const;
+const DISMISSAL_ROUTES = ["Bus", "Carline", "AfterCare"] as const;
+const MORNING_ROUTES = ["Bus", "Carline", "WalkUp", "BeforeCare"] as const;
+
+const MORNING_STAGE_LABEL: Record<string, string> = {
+  "NotArrived": "Not Arrived",
+  "BoardedBus": "Boarded Bus",
+  "AtJCC": "At JCC",
+  "BeforeCareIn": "In Before Care",
+  "SentToBunk": "Sent to Bunk",
+  "Confirmed": "Confirmed",
+};
+
+const BUS_STAGES = ["NotArrived", "BoardedBus", "AtJCC", "SentToBunk", "Confirmed"] as const;
+
+type Presence = "At Camp" | "Not at Camp" | "Absent" | "Dismissed";
+
+function getPresence(c: Doc<"campers">): Presence {
+  if (c.attendanceStatus === "Absent") return "Absent";
+  if (c.status === "Dismissed" || c.sentToBus || c.sentToAfterCare) return "Dismissed";
+  if (c.morningStage && c.morningStage !== "Confirmed") return "Not at Camp";
+  return "At Camp";
+}
+
+function effectiveDismissalRoute(c: Doc<"campers">) {
+  return c.dismissalRouteOverride ?? c.dismissalRoute;
+}
+
+const PRESENCE_STYLE: Record<Presence, string> = {
+  "At Camp": "bg-green-100 text-green-700",
+  "Not at Camp": "bg-slate-200 text-slate-600",
+  "Absent": "bg-red-100 text-red-700",
+  "Dismissed": "bg-blue-100 text-blue-700",
 };
 
 const fmt = (ts?: number) =>
@@ -76,6 +112,10 @@ function AppInner() {
   const tabs = [
     { id: "carline", label: "Carline", icon: Car },
     { id: "walkup", label: "Walk-Up", icon: Footprints },
+    { id: "counselor", label: "Counselor", icon: Users },
+    { id: "bus", label: "Bus", icon: Bus },
+    { id: "beforecare", label: "Before Care", icon: Sunrise },
+    { id: "aftercare", label: "After Care", icon: Sunset },
     { id: "attendance", label: "Attendance", icon: ClipboardList },
     { id: "dispatcher", label: "Dispatcher", icon: Radio },
     { id: "runner", label: "Runner", icon: User },
@@ -109,6 +149,10 @@ function AppInner() {
         {(role === "carline" || role === "walkup") && (
           <Caller source={role === "carline" ? "Carline" : "Walk-Up"} />
         )}
+        {role === "counselor" && <CounselorView />}
+        {role === "bus" && <BusView />}
+        {role === "beforecare" && <BeforeCareView />}
+        {role === "aftercare" && <AfterCareView />}
         {role === "attendance" && <AttendanceView />}
         {role === "dispatcher" && <Dispatcher />}
         {role === "runner" && <RunnerView />}
@@ -330,6 +374,400 @@ function AttendanceView() {
   );
 }
 
+function CounselorView() {
+  const bunks = useQuery(api.campers.getBunks);
+  const [bunk, setBunk] = useState<string | null>(null);
+  const roster = useQuery(api.campers.byBunk, bunk ? { bunk } : "skip");
+
+  const setMorningStage = useMutation(api.campers.setMorningStage);
+  const toggleAbsent = useMutation(api.campers.toggleAbsent);
+  const setEarlyDismissal = useMutation(api.campers.setEarlyDismissal);
+  const sendToBus = useMutation(api.campers.sendToBus);
+  const sendToAfterCare = useMutation(api.campers.sendToAfterCare);
+  const undoAfternoon = useMutation(api.campers.undoAfternoon);
+
+  const [lunchFilter, setLunchFilter] = useState<"All" | "Bought" | "Brought">("All");
+  const [routeFilter, setRouteFilter] = useState<"All" | "Bus" | "Carline" | "AfterCare">("All");
+
+  if (bunks === undefined) return <Loading />;
+
+  if (!bunk) {
+    return (
+      <div className="max-w-md mx-auto">
+        <h2 className="text-xl font-bold text-slate-900 mb-4">Choose your bunk</h2>
+        {bunks.length === 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
+            No bunks found.
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          {bunks.map((b) => (
+            <button key={b} onClick={() => setBunk(b)} className="bg-white border border-slate-200 rounded-2xl py-8 font-semibold text-slate-900 hover:border-slate-900 shadow-sm">
+              {b}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (roster === undefined) return <Loading />;
+
+  const filtered = roster.filter((c) => {
+    if (lunchFilter !== "All" && (c.lunchType ?? "Brought") !== lunchFilter) return false;
+    if (routeFilter !== "All" && effectiveDismissalRoute(c) !== routeFilter) return false;
+    return true;
+  });
+
+  const groups: Record<Presence, Doc<"campers">[]> = {
+    "At Camp": [], "Not at Camp": [], "Absent": [], "Dismissed": [],
+  };
+  for (const c of filtered) groups[getPresence(c)].push(c);
+
+  const order: Presence[] = ["At Camp", "Not at Camp", "Absent", "Dismissed"];
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Users size={22} className="text-slate-700" />
+          <h2 className="text-xl font-bold text-slate-900">{bunk}</h2>
+        </div>
+        <button onClick={() => setBunk(null)} className="text-sm text-slate-500 hover:text-slate-900">Switch bunk</button>
+      </div>
+
+      <div className="grid grid-cols-4 gap-2 mb-4">
+        {order.map((p) => (
+          <div key={p} className="bg-white rounded-xl border border-slate-200 p-3 text-center shadow-sm">
+            <p className="text-xl font-bold text-slate-900">{groups[p].length}</p>
+            <p className="text-xs text-slate-500 mt-0.5">{p}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-5">
+        <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl p-1">
+          {(["All", ...LUNCH_OPTIONS] as const).map((l) => (
+            <button key={l} onClick={() => setLunchFilter(l)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium ${lunchFilter === l ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+              {l === "All" ? "Any Lunch" : l}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl p-1">
+          {(["All", ...DISMISSAL_ROUTES] as const).map((r) => (
+            <button key={r} onClick={() => setRouteFilter(r)}
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium ${routeFilter === r ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+              {r === "All" ? "Any Dismissal" : r}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-5">
+        {order.filter((p) => groups[p].length > 0).map((p) => (
+          <div key={p}>
+            <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide mb-2">{p} ({groups[p].length})</h3>
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm divide-y divide-slate-100">
+              {groups[p].map((c) => {
+                const route = effectiveDismissalRoute(c);
+                const stage = c.morningStage;
+                return (
+                  <div key={c._id} className="flex items-center justify-between gap-3 px-4 py-3 flex-wrap">
+                    <div>
+                      <p className="font-semibold text-slate-900">{c.name}</p>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap text-xs text-slate-500">
+                        {c.lunchType && <span className="px-2 py-0.5 rounded-full bg-slate-100">{c.lunchType}</span>}
+                        {route && <span className="px-2 py-0.5 rounded-full bg-slate-100">{route}</span>}
+                        {c.earlyDismissal && <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">Early Dismissal</span>}
+                        {p === "Not at Camp" && stage && <span className="px-2 py-0.5 rounded-full bg-slate-100">{MORNING_STAGE_LABEL[stage]}</span>}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap justify-end">
+                      {p === "Not at Camp" && stage === "SentToBunk" && (
+                        <button onClick={() => setMorningStage({ id: c._id, stage: "Confirmed" })}
+                          className="flex items-center gap-1 text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-green-700">
+                          <Check size={13} /> Confirm Received
+                        </button>
+                      )}
+                      {p === "Not at Camp" && c.morningRoute === "BeforeCare" && stage === "NotArrived" && (
+                        <button onClick={() => setMorningStage({ id: c._id, stage: "BeforeCareIn" })}
+                          className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-blue-700">
+                          Mark In
+                        </button>
+                      )}
+                      {p === "Not at Camp" && c.morningRoute === "BeforeCare" && stage === "BeforeCareIn" && (
+                        <button onClick={() => setMorningStage({ id: c._id, stage: "SentToBunk" })}
+                          className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-blue-700">
+                          Send to Bunk
+                        </button>
+                      )}
+                      {p === "Not at Camp" && (c.morningRoute === "Carline" || c.morningRoute === "WalkUp") && stage === "NotArrived" && (
+                        <button onClick={() => setMorningStage({ id: c._id, stage: "Confirmed" })}
+                          className="flex items-center gap-1 text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-green-700">
+                          <Check size={13} /> Mark Arrived
+                        </button>
+                      )}
+                      {p === "At Camp" && route === "Bus" && (
+                        <button onClick={() => sendToBus({ id: c._id })}
+                          className="text-xs bg-violet-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-violet-700">
+                          Send to Bus
+                        </button>
+                      )}
+                      {p === "At Camp" && route === "AfterCare" && (
+                        <button onClick={() => sendToAfterCare({ id: c._id })}
+                          className="text-xs bg-violet-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-violet-700">
+                          Send to After Care
+                        </button>
+                      )}
+                      {p === "Dismissed" && (c.sentToBus || c.sentToAfterCare) && (
+                        <button onClick={() => undoAfternoon({ id: c._id })}
+                          className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-900">
+                          <Undo2 size={13} /> Undo
+                        </button>
+                      )}
+                      {(p === "At Camp" || p === "Not at Camp") && (
+                        <button onClick={() => setEarlyDismissal({ id: c._id, earlyDismissal: !c.earlyDismissal })}
+                          className={`text-xs px-3 py-1.5 rounded-lg font-medium ${c.earlyDismissal ? "bg-amber-500 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}>
+                          Early Dismissal
+                        </button>
+                      )}
+                      <button onClick={() => toggleAbsent({ id: c._id })}
+                        className={`text-xs px-3 py-1.5 rounded-lg font-medium ${c.attendanceStatus === "Absent" ? "bg-red-600 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}>
+                        {c.attendanceStatus === "Absent" ? "Absent" : "Mark Absent"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        {filtered.length === 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
+            No campers match these filters.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BusView() {
+  const overview = useQuery(api.campers.busOverview);
+  const setMorningStage = useMutation(api.campers.setMorningStage);
+  const [route, setRoute] = useState<string | null>(null);
+
+  if (overview === undefined) return <Loading />;
+
+  const routes = Object.keys(overview).sort();
+
+  if (!route) {
+    return (
+      <div className="max-w-2xl mx-auto">
+        <div className="flex items-center gap-2 mb-4">
+          <Bus size={22} className="text-slate-700" />
+          <h2 className="text-xl font-bold text-slate-900">Bus Dashboard</h2>
+        </div>
+        {routes.length === 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
+            No bus routes configured. Set a camper&apos;s morning route to &quot;Bus&quot; with a bus route name in Admin.
+          </div>
+        )}
+        <div className="space-y-3">
+          {routes.map((r) => {
+            const campers = overview[r];
+            const counts: Record<string, number> = {};
+            for (const stage of BUS_STAGES) counts[stage] = 0;
+            for (const c of campers) counts[c.morningStage ?? "NotArrived"]++;
+            return (
+              <button key={r} onClick={() => setRoute(r)}
+                className="w-full bg-white rounded-2xl border border-slate-200 p-4 shadow-sm text-left hover:border-slate-900">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="font-bold text-slate-900">{r}</p>
+                  <span className="text-xs text-slate-500">{campers.length} campers</span>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {BUS_STAGES.map((s) => (
+                    <span key={s} className="px-2 py-1 rounded-full bg-slate-100 text-slate-600">
+                      {MORNING_STAGE_LABEL[s]}: {counts[s]}
+                    </span>
+                  ))}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  const campers = (overview[route] ?? []).slice().sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Bus size={22} className="text-slate-700" />
+          <h2 className="text-xl font-bold text-slate-900">Bus: {route}</h2>
+        </div>
+        <button onClick={() => setRoute(null)} className="text-sm text-slate-500 hover:text-slate-900">All buses</button>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm divide-y divide-slate-100">
+        {campers.map((c) => {
+          const stage = c.morningStage ?? "NotArrived";
+          const idx = BUS_STAGES.indexOf(stage as typeof BUS_STAGES[number]);
+          const next = BUS_STAGES[idx + 1];
+          return (
+            <div key={c._id} className="flex items-center justify-between gap-3 px-4 py-3 flex-wrap">
+              <div>
+                <p className="font-semibold text-slate-900">{c.name}</p>
+                <p className="text-xs text-slate-500">{c.bunk}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 whitespace-nowrap">
+                  {MORNING_STAGE_LABEL[stage]}
+                </span>
+                {next && next !== "Confirmed" && (
+                  <button onClick={() => setMorningStage({ id: c._id, stage: next })}
+                    className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-blue-700 flex items-center gap-1">
+                    {MORNING_STAGE_LABEL[next]} <ChevronRight size={13} />
+                  </button>
+                )}
+                {stage !== "NotArrived" && stage !== "Confirmed" && (
+                  <button onClick={() => setMorningStage({ id: c._id, stage: "NotArrived" })}
+                    className="text-xs text-slate-400 hover:text-slate-700">
+                    <Undo2 size={13} />
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {campers.length === 0 && (
+          <div className="p-10 text-center text-slate-500">No campers on this route.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BeforeCareView() {
+  const campers = useQuery(api.campers.list);
+  const setMorningStage = useMutation(api.campers.setMorningStage);
+
+  if (campers === undefined) return <Loading />;
+
+  const list = campers
+    .filter((c) => c.morningRoute === "BeforeCare" && c.morningStage !== "Confirmed")
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <div className="flex items-center gap-2 mb-4">
+        <Sunrise size={22} className="text-slate-700" />
+        <h2 className="text-xl font-bold text-slate-900">Before Care</h2>
+      </div>
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm divide-y divide-slate-100">
+        {list.map((c) => {
+          const stage = c.morningStage ?? "NotArrived";
+          return (
+            <div key={c._id} className="flex items-center justify-between gap-3 px-4 py-3 flex-wrap">
+              <div>
+                <p className="font-semibold text-slate-900">{c.name}</p>
+                <p className="text-xs text-slate-500">{c.bunk}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-100 text-slate-600 whitespace-nowrap">
+                  {MORNING_STAGE_LABEL[stage]}
+                </span>
+                {stage === "NotArrived" && (
+                  <button onClick={() => setMorningStage({ id: c._id, stage: "BeforeCareIn" })}
+                    className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-blue-700">
+                    Mark In
+                  </button>
+                )}
+                {stage === "BeforeCareIn" && (
+                  <button onClick={() => setMorningStage({ id: c._id, stage: "SentToBunk" })}
+                    className="text-xs bg-violet-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-violet-700">
+                    Send to Bunk
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {list.length === 0 && (
+          <div className="p-10 text-center text-slate-500">No campers awaiting before care this morning.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AfterCareView() {
+  const campers = useQuery(api.campers.list);
+  const confirmAfterCare = useMutation(api.campers.confirmAfterCare);
+  const undoAfternoon = useMutation(api.campers.undoAfternoon);
+
+  if (campers === undefined) return <Loading />;
+
+  const incoming = campers
+    .filter((c) => c.sentToAfterCare && !c.afterCareConfirmed)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const arrived = campers
+    .filter((c) => c.sentToAfterCare && c.afterCareConfirmed)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <div className="flex items-center gap-2 mb-4">
+        <Sunset size={22} className="text-slate-700" />
+        <h2 className="text-xl font-bold text-slate-900">After Care</h2>
+      </div>
+
+      <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide mb-2">Incoming ({incoming.length})</h3>
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm divide-y divide-slate-100 mb-5">
+        {incoming.map((c) => (
+          <div key={c._id} className="flex items-center justify-between gap-3 px-4 py-3 flex-wrap">
+            <div>
+              <p className="font-semibold text-slate-900">{c.name}</p>
+              <p className="text-xs text-slate-500">{c.bunk}</p>
+            </div>
+            <button onClick={() => confirmAfterCare({ id: c._id })}
+              className="flex items-center gap-1 text-xs bg-green-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-green-700">
+              <Check size={13} /> Confirm Arrival
+            </button>
+          </div>
+        ))}
+        {incoming.length === 0 && (
+          <div className="p-10 text-center text-slate-500">No campers en route to after care.</div>
+        )}
+      </div>
+
+      <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide mb-2">Checked In ({arrived.length})</h3>
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm divide-y divide-slate-100">
+        {arrived.map((c) => (
+          <div key={c._id} className="flex items-center justify-between gap-3 px-4 py-3 flex-wrap">
+            <div>
+              <p className="font-semibold text-slate-900">{c.name}</p>
+              <p className="text-xs text-slate-500">{c.bunk}</p>
+            </div>
+            <button onClick={() => undoAfternoon({ id: c._id })}
+              className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-900">
+              <Undo2 size={13} /> Undo
+            </button>
+          </div>
+        ))}
+        {arrived.length === 0 && (
+          <div className="p-10 text-center text-slate-500">No campers checked in yet.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Dispatcher() {
   const active = useQuery(api.campers.active);
   const assign = useMutation(api.campers.assign);
@@ -468,6 +906,7 @@ function RunnerView() {
 
 function Admin() {
   const [q, setQ] = useState("");
+  const [tab, setTab] = useState<"dismissal" | "setup">("dismissal");
   const campers = useQuery(api.campers.list);
   const resetDay = useMutation(api.campers.resetDay);
 
@@ -513,35 +952,134 @@ function Admin() {
           className="w-full pl-10 pr-3 py-2.5 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900" />
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-500 text-left">
-              <tr>
-                {["Camper", "Bunk", "Code", "Source", "Runner", "Status", "Attendance"].map((h) => (
-                  <th key={h} className="px-4 py-2.5 font-medium">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((c) => (
-                <tr key={c._id} className="border-t border-slate-100">
-                  <td className="px-4 py-2.5 font-medium text-slate-900">{c.name}</td>
-                  <td className="px-4 py-2.5 text-slate-600">{c.bunk}</td>
-                  <td className="px-4 py-2.5 text-slate-600">{c.code}</td>
-                  <td className="px-4 py-2.5 text-slate-600">{c.callSource || "—"}</td>
-                  <td className="px-4 py-2.5 text-slate-600">{c.runner || "—"}</td>
-                  <td className="px-4 py-2.5"><StatusBadge status={c.status} /></td>
-                  <td className="px-4 py-2.5">
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${ATTENDANCE_STYLE[c.attendanceStatus ?? "Present"]}`}>
-                      {c.attendanceStatus ?? "Present"}
-                    </span>
-                  </td>
+      <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl p-1 mb-3 w-fit">
+        <button onClick={() => setTab("dismissal")}
+          className={`px-3 py-1.5 rounded-lg text-sm font-medium ${tab === "dismissal" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+          Dismissal Status
+        </button>
+        <button onClick={() => setTab("setup")}
+          className={`px-3 py-1.5 rounded-lg text-sm font-medium ${tab === "setup" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+          Routes &amp; Setup
+        </button>
+      </div>
+
+      {tab === "dismissal" ? (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-slate-500 text-left">
+                <tr>
+                  {["Camper", "Bunk", "Code", "Source", "Runner", "Status", "Attendance"].map((h) => (
+                    <th key={h} className="px-4 py-2.5 font-medium">{h}</th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filtered.map((c) => (
+                  <tr key={c._id} className="border-t border-slate-100">
+                    <td className="px-4 py-2.5 font-medium text-slate-900">{c.name}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{c.bunk}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{c.code}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{c.callSource || "—"}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{c.runner || "—"}</td>
+                    <td className="px-4 py-2.5"><StatusBadge status={c.status} /></td>
+                    <td className="px-4 py-2.5">
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${ATTENDANCE_STYLE[c.attendanceStatus ?? "Present"]}`}>
+                        {c.attendanceStatus ?? "Present"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
+      ) : (
+        <AdminSetupTable campers={filtered} />
+      )}
+    </div>
+  );
+}
+
+function AdminSetupTable({ campers }: { campers: Doc<"campers">[] }) {
+  const setLunchType = useMutation(api.campers.setLunchType);
+  const setMorningRoute = useMutation(api.campers.setMorningRoute);
+  const setDismissalRoute = useMutation(api.campers.setDismissalRoute);
+  const setDismissalRouteOverride = useMutation(api.campers.setDismissalRouteOverride);
+  const setEarlyDismissal = useMutation(api.campers.setEarlyDismissal);
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500 text-left">
+            <tr>
+              {["Camper", "Bunk", "Lunch", "Morning Route", "Bus Route", "Dismissal Route", "Override", "Early Dismissal", "Presence"].map((h) => (
+                <th key={h} className="px-4 py-2.5 font-medium whitespace-nowrap">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {campers.map((c) => (
+              <tr key={c._id} className="border-t border-slate-100">
+                <td className="px-4 py-2.5 font-medium text-slate-900 whitespace-nowrap">{c.name}</td>
+                <td className="px-4 py-2.5 text-slate-600 whitespace-nowrap">{c.bunk}</td>
+                <td className="px-4 py-2.5">
+                  <select value={c.lunchType ?? ""} onChange={(e) => setLunchType({ id: c._id, lunchType: e.target.value as typeof LUNCH_OPTIONS[number] })}
+                    className="text-sm border border-slate-300 rounded-lg py-1.5 px-2 focus:outline-none focus:ring-2 focus:ring-slate-900">
+                    <option value="">—</option>
+                    {LUNCH_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </td>
+                <td className="px-4 py-2.5">
+                  <select value={c.morningRoute ?? ""} onChange={(e) => {
+                    const v = e.target.value;
+                    setMorningRoute({ id: c._id, morningRoute: v ? (v as typeof MORNING_ROUTES[number]) : undefined, busRoute: c.busRoute });
+                  }} className="text-sm border border-slate-300 rounded-lg py-1.5 px-2 focus:outline-none focus:ring-2 focus:ring-slate-900">
+                    <option value="">—</option>
+                    {MORNING_ROUTES.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </td>
+                <td className="px-4 py-2.5">
+                  {c.morningRoute === "Bus" ? (
+                    <input defaultValue={c.busRoute ?? ""} placeholder="e.g. Route 3"
+                      onBlur={(e) => setMorningRoute({ id: c._id, morningRoute: "Bus", busRoute: e.target.value || undefined })}
+                      className="text-sm border border-slate-300 rounded-lg py-1.5 px-2 w-28 focus:outline-none focus:ring-2 focus:ring-slate-900" />
+                  ) : <span className="text-slate-300">—</span>}
+                </td>
+                <td className="px-4 py-2.5">
+                  <select value={c.dismissalRoute ?? ""} onChange={(e) => {
+                    const v = e.target.value;
+                    setDismissalRoute({ id: c._id, dismissalRoute: v ? (v as typeof DISMISSAL_ROUTES[number]) : undefined });
+                  }} className="text-sm border border-slate-300 rounded-lg py-1.5 px-2 focus:outline-none focus:ring-2 focus:ring-slate-900">
+                    <option value="">—</option>
+                    {DISMISSAL_ROUTES.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </td>
+                <td className="px-4 py-2.5">
+                  <select value={c.dismissalRouteOverride ?? ""} onChange={(e) => {
+                    const v = e.target.value;
+                    setDismissalRouteOverride({ id: c._id, dismissalRouteOverride: v ? (v as typeof DISMISSAL_ROUTES[number]) : undefined });
+                  }} className="text-sm border border-slate-300 rounded-lg py-1.5 px-2 focus:outline-none focus:ring-2 focus:ring-slate-900">
+                    <option value="">— (none)</option>
+                    {DISMISSAL_ROUTES.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </td>
+                <td className="px-4 py-2.5">
+                  <button onClick={() => setEarlyDismissal({ id: c._id, earlyDismissal: !c.earlyDismissal })}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-medium ${c.earlyDismissal ? "bg-amber-500 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}>
+                    {c.earlyDismissal ? "Yes" : "No"}
+                  </button>
+                </td>
+                <td className="px-4 py-2.5">
+                  <span className={`px-2.5 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${PRESENCE_STYLE[getPresence(c)]}`}>
+                    {getPresence(c)}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
