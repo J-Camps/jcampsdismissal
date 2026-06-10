@@ -17,6 +17,7 @@ import {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const RUNNERS = ["Runner 1", "Runner 2", "Runner 3", "Runner 4"];
+const BUS_ROUTES = ["Bus 1", "Bus 2", "Bus 3", "Bus 4", "Bus 5", "Bus 6"];
 const STATUSES = ["Waiting", "Called", "Assigned", "Picked Up", "Dismissed"] as const;
 
 const STATUS_STYLE: Record<string, string> = {
@@ -146,6 +147,9 @@ function RoleRouter({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void
   if (staff.role === "carline")    return wrap(<Caller source="Carline" />);
   if (staff.role === "walkup")     return wrap(<Caller source="Walk-Up" />);
   if (staff.role === "dispatcher") return wrap(<Dispatcher />);
+  if (staff.role === "beforecare") return wrap(<CareView staff={staff} kind="BeforeCare" />);
+  if (staff.role === "aftercare")  return wrap(<CareView staff={staff} kind="AfterCare" />);
+  if (staff.role === "bus")        return wrap(<BusView staff={staff} />);
   return <MultiTabShell staff={staff} onLogout={onLogout} />;
 }
 
@@ -153,6 +157,7 @@ function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => vo
   const labels: Record<string, string> = {
     counselor:"Counselor", specialist:"Specialist", carline:"Carline", walkup:"Walk-Up",
     dispatcher:"Dispatcher", runner:"Runner", director:"Director", admin:"Admin",
+    beforecare:"Before Care", aftercare:"After Care", bus:"Bus",
   };
   return (
     <header className="sticky top-0 z-20" style={{ backgroundColor: "#023B64" }}>
@@ -525,12 +530,13 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 // ─── Counselor View ───────────────────────────────────────────────────────────
 
-type GroupBy = "dismissal" | "lunch" | "attendance";
+type GroupBy = "dismissal" | "lunch" | "attendance" | "lunchCheck";
 
 const GROUP_BY_OPTIONS: { id: GroupBy; label: string }[] = [
   { id: "attendance", label: "Attendance" },
   { id: "dismissal",  label: "Dismissal"  },
   { id: "lunch",      label: "Lunch"      },
+  { id: "lunchCheck", label: "Lunch Check" },
 ];
 
 // Only used in dismissal + lunch modes (attendance is rendered inline)
@@ -741,8 +747,21 @@ function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
           </div>
         )}
 
+        {/* ── LUNCH CHECK VIEW ── */}
+        {groupBy === "lunchCheck" && (
+          <CheckpointRosterView
+            campers={present}
+            checkpoint="Lunch"
+            staffName={staff.name}
+            actionLabel="Had Lunch"
+            doneLabel="Had Lunch"
+            groupLabel={bunk}
+            emptyMessage="No campers checked in yet."
+          />
+        )}
+
         {/* ── DISMISSAL / LUNCH VIEW ── */}
-        {groupBy !== "attendance" && (() => {
+        {(groupBy === "dismissal" || groupBy === "lunch") && (() => {
           const groups = buildGroups(notCheckedIn, groupBy as "dismissal" | "lunch");
           return (
             <div className="space-y-4">
@@ -815,6 +834,225 @@ function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
 
       {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode staffName={staff.name} />}
     </>
+  );
+}
+
+// ─── Generic Checkpoint Roster (Before/After Care, Bus sheets, Lunch check) ──
+
+type CheckpointKey = "BeforeCare" | "AfterCare" | "Lunch" | "Bus";
+
+function CheckpointRosterView({
+  campers, checkpoint, staffName, actionLabel, doneLabel, groupLabel, emptyMessage,
+}: {
+  campers: CamperDoc[];
+  checkpoint: CheckpointKey;
+  staffName: string;
+  actionLabel: string;   // e.g. "Check In"
+  doneLabel: string;     // e.g. "Checked In"
+  groupLabel?: string;   // optional group name for the activity log, e.g. "Bus 3"
+  emptyMessage?: string;
+}) {
+  const setCheckpoint = useMutation(api.campers.setCheckpoint);
+  const [selected, setSelected] = useState<CamperDoc | null>(null);
+
+  const notDone = campers.filter(c => !c.dailyCheckpoints?.[checkpoint]);
+  const done    = campers.filter(c => c.dailyCheckpoints?.[checkpoint]);
+
+  if (campers.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-slate-500">
+        {emptyMessage ?? "No campers in this group."}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="space-y-4">
+        {/* Progress bar */}
+        <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+          <div className="h-full rounded-full transition-all duration-500"
+            style={{ width: `${campers.length ? (done.length / campers.length) * 100 : 0}%`, backgroundColor: "#5B8C9D" }} />
+        </div>
+
+        {/* Stat pills */}
+        <div className="flex gap-2">
+          <Pill value={done.length}    label={doneLabel} color="green" />
+          <Pill value={notDone.length} label="Remaining" color="slate" />
+        </div>
+
+        {/* Needs check-in */}
+        {notDone.length > 0 && (
+          <div>
+            <div className="flex items-center gap-2 mb-3 px-1">
+              <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">
+                Needs Check-In
+              </span>
+              <span className="text-xs text-slate-400">{notDone.length}</span>
+            </div>
+            <div className="space-y-2">
+              {notDone.map(c => (
+                <RosterCheckCard key={c._id} camper={c} present={false}
+                  actionLabel={actionLabel} doneLabel={doneLabel}
+                  onTap={() => setSelected(c)}
+                  onCheck={() => setCheckpoint({ id: c._id, checkpoint, value: true, staffName, label: groupLabel })}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Done */}
+        {done.length > 0 && (
+          <div>
+            <div className="flex items-center gap-2 mb-3 px-1">
+              <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-green-100 text-green-700">
+                {doneLabel}
+              </span>
+              <span className="text-xs text-slate-400">{done.length}</span>
+            </div>
+            <div className="space-y-2">
+              {done.map(c => (
+                <RosterCheckCard key={c._id} camper={c} present={true}
+                  actionLabel={actionLabel} doneLabel={doneLabel}
+                  onTap={() => setSelected(c)}
+                  onCheck={() => setCheckpoint({ id: c._id, checkpoint, value: false, staffName, label: groupLabel })}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {notDone.length === 0 && (
+          <div className="bg-green-50 border border-green-200 rounded-2xl p-6 text-center">
+            <Check size={32} className="text-green-500 mx-auto mb-2" />
+            <p className="font-bold text-green-800 text-lg">All {campers.length} campers {doneLabel.toLowerCase()}!</p>
+          </div>
+        )}
+      </div>
+
+      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode />}
+    </>
+  );
+}
+
+// Same card shell as CamperCard (size/layout never changes), but driven by a
+// generic "present" flag + action labels instead of the morning attendance flow.
+function RosterCheckCard({
+  camper, onTap, onCheck, present, actionLabel, doneLabel,
+}: {
+  camper: CamperDoc;
+  onTap: () => void;
+  onCheck: () => void;
+  present: boolean;
+  actionLabel: string;
+  doneLabel: string;
+}) {
+  const name = camper.preferredName
+    ? `${camper.preferredName}${camper.lastName ? " " + camper.lastName : ""}`
+    : camper.name;
+  const bg = avatarBg(camper.name);
+
+  return (
+    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${present ? "border-green-200" : "border-slate-200"}`}>
+      <button onClick={onTap} className="w-full flex items-center gap-3 px-4 py-3.5 text-left active:bg-slate-50">
+        <div className="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 font-bold text-lg text-white overflow-hidden"
+          style={{ backgroundColor: bg }}>
+          {camper.photoUrl
+            ? <img src={camper.photoUrl} alt={name} className="w-full h-full object-cover" />
+            : (camper.preferredName ?? camper.name).charAt(0).toUpperCase()}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="font-semibold text-slate-900 text-base leading-tight">{name}</span>
+            {camper.hasAllergies && <AlertTriangle size={13} className="text-orange-500 flex-shrink-0" />}
+            {camper.hasNotes     && <AlertCircle   size={13} className="text-blue-400  flex-shrink-0" />}
+          </div>
+          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+            <span className="text-xs text-slate-400">{camper.bunk}</span>
+            {present
+              ? <span className="text-xs font-semibold text-green-600 bg-green-100 px-2 py-0.5 rounded-full">{doneLabel}</span>
+              : <span className="text-xs text-slate-400 font-medium">Not yet</span>}
+          </div>
+          <AttendanceNoteLine note={camper.attendanceNote} />
+        </div>
+        <ArrowRight size={16} className="text-slate-300 flex-shrink-0" />
+      </button>
+
+      <div className={`border-t flex ${present ? "border-green-100" : "border-slate-100"}`}>
+        {present ? (
+          <button onClick={onCheck}
+            className="flex-1 py-3.5 text-sm font-bold flex items-center justify-center gap-1.5 bg-green-50 text-green-700 active:bg-green-100 transition-colors">
+            <Check size={15} /> {doneLabel}
+          </button>
+        ) : (
+          <button onClick={onCheck}
+            className="flex-1 py-3.5 text-sm font-bold text-white flex items-center justify-center gap-1.5 transition-colors active:opacity-80"
+            style={{ backgroundColor: "#023B64" }}>
+            <Check size={15} /> {actionLabel}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Before / After Care ──────────────────────────────────────────────────────
+
+function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "AfterCare" }) {
+  const roster = useQuery(kind === "BeforeCare" ? api.campers.getBeforeCareRoster : api.campers.getAfterCareRoster, {});
+  if (roster === undefined) return <Loading />;
+
+  const title = kind === "BeforeCare" ? "Before Care" : "After Care";
+  return (
+    <div className="space-y-4">
+      <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{title}</h2>
+      <CheckpointRosterView
+        campers={roster}
+        checkpoint={kind}
+        staffName={staff.name}
+        actionLabel="Check In"
+        doneLabel="Checked In"
+        groupLabel={title}
+        emptyMessage={`No campers are enrolled in ${title}.`}
+      />
+    </div>
+  );
+}
+
+// ─── Bus Attendance Sheets ────────────────────────────────────────────────────
+
+function BusView({ staff }: { staff: StaffDoc }) {
+  const [route, setRoute] = useState(staff.groupAssignment ?? BUS_ROUTES[0]);
+  const roster = useQuery(api.campers.getBusRoster, { route });
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{route}</h2>
+
+      {/* Bus selector */}
+      <div className="flex gap-1.5 overflow-x-auto pb-1">
+        {BUS_ROUTES.map(r => (
+          <button key={r} onClick={() => setRoute(r)}
+            className="px-3.5 py-2 rounded-xl text-sm font-semibold transition-colors flex-shrink-0"
+            style={route === r ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b", backgroundColor: "#fff", border: "1px solid #e2e8f0" }}>
+            {r}
+          </button>
+        ))}
+      </div>
+
+      {roster === undefined ? <Loading /> : (
+        <CheckpointRosterView
+          campers={roster}
+          checkpoint="Bus"
+          staffName={staff.name}
+          actionLabel="Board"
+          doneLabel="On Bus"
+          groupLabel={route}
+          emptyMessage={`No campers assigned to ${route}.`}
+        />
+      )}
+    </div>
   );
 }
 

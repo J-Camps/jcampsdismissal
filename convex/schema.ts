@@ -46,6 +46,9 @@ export const STAFF_ROLE = v.union(
   v.literal("runner"),
   v.literal("director"),
   v.literal("admin"),
+  v.literal("beforecare"),
+  v.literal("aftercare"),
+  v.literal("bus"),
 );
 
 export const PERIOD = v.union(
@@ -80,7 +83,14 @@ export const ATTENDANCE_CHECKPOINT = v.union(
   v.literal("SentToBus"),
   v.literal("SentToAfterCare"),
   v.literal("LeftEarly"),
+  v.literal("BeforeCare"),
+  v.literal("AfterCare"),
+  v.literal("Lunch"),
+  v.literal("Bus"),
 );
+
+// The 6 bus attendance sheets, used for the "bus" staff role
+export const BUS_ROUTES = ["Bus 1", "Bus 2", "Bus 3", "Bus 4", "Bus 5", "Bus 6"] as const;
 
 export default defineSchema({
   campers: defineTable({
@@ -111,6 +121,9 @@ export default defineSchema({
 
     // ── logistics ──
     transportationType: v.optional(TRANSPORTATION_TYPE),
+    busRoute: v.optional(v.string()),     // e.g. "Bus 1".."Bus 6" — for bus attendance sheets
+    beforeCare: v.optional(v.boolean()),  // enrolled in Before Care
+    afterCare: v.optional(v.boolean()),   // enrolled in After Care
 
     // ── photo ──
     photoUrl: v.optional(v.string()),
@@ -128,6 +141,9 @@ export default defineSchema({
     periodGroups: v.optional(v.record(v.string(), v.string())),
     // Per-period attendance for the day, e.g. { Period1: "Present", Period3: "Absent" }
     periodAttendance: v.optional(v.record(v.string(), v.string())),
+
+    // Generic per-day checkpoint check-offs, e.g. { BeforeCare: true, Lunch: true, Bus: true }
+    dailyCheckpoints: v.optional(v.record(v.string(), v.boolean())),
   })
     .index("by_code", ["code"])
     .index("by_status", ["status"])
@@ -144,6 +160,8 @@ export default defineSchema({
     runnerLabel: v.optional(v.string()),    // for runners, e.g. "Runner 1"
     // For specialists, and Upper Camp counselors who also run a period activity group
     periodAssignments: v.optional(v.array(PERIOD_ASSIGNMENT)),
+    // For bus / before-care / after-care staff — which group they run, e.g. "Bus 3"
+    groupAssignment: v.optional(v.string()),
   }).index("by_code", ["code"]),
 
   // Immutable log of every attendance action

@@ -59,6 +59,33 @@ export const getBunks = query({
   },
 });
 
+// All campers enrolled in Before Care
+export const getBeforeCareRoster = query({
+  args: {},
+  handler: async (ctx) => {
+    const all = await ctx.db.query("campers").collect();
+    return all.filter((c) => c.beforeCare);
+  },
+});
+
+// All campers enrolled in After Care
+export const getAfterCareRoster = query({
+  args: {},
+  handler: async (ctx) => {
+    const all = await ctx.db.query("campers").collect();
+    return all.filter((c) => c.afterCare);
+  },
+});
+
+// All campers assigned to a given bus route (one of the 6 bus attendance sheets)
+export const getBusRoster = query({
+  args: { route: v.string() },
+  handler: async (ctx, { route }) => {
+    const all = await ctx.db.query("campers").collect();
+    return all.filter((c) => c.busRoute === route);
+  },
+});
+
 // All campers scheduled into a given activity group during a given period
 export const getPeriodRoster = query({
   args: { period: v.string(), group: v.string() },
@@ -162,6 +189,7 @@ export const resetDay = mutation({
         tLeftEarly: undefined,
         attendanceNote: undefined,
         periodAttendance: undefined,
+        dailyCheckpoints: undefined,
       });
     }
   },
@@ -295,6 +323,31 @@ export const setPeriodAttendance = mutation({
       date: today(),
       checkpoint: period as "Period1" | "Period2" | "Period3" | "Period4" | "Period5" | "Period6",
       status: `${status} for ${period}`,
+      staffName,
+      timestamp: Date.now(),
+    });
+  },
+});
+
+// Generic per-day checkpoint check-off (Before Care, After Care, Lunch, Bus sheets)
+export const setCheckpoint = mutation({
+  args: {
+    id: v.id("campers"),
+    checkpoint: v.union(v.literal("BeforeCare"), v.literal("AfterCare"), v.literal("Lunch"), v.literal("Bus")),
+    value: v.boolean(),
+    staffName: v.string(),
+    label: v.optional(v.string()), // optional human-friendly group name, e.g. "Bus 3"
+  },
+  handler: async (ctx, { id, checkpoint, value, staffName, label }) => {
+    const camper = await ctx.db.get(id);
+    if (!camper) return;
+    const dailyCheckpoints = { ...(camper.dailyCheckpoints ?? {}), [checkpoint]: value };
+    await ctx.db.patch(id, { dailyCheckpoints });
+    await ctx.db.insert("attendanceLogs", {
+      camperId: id,
+      date: today(),
+      checkpoint,
+      status: value ? `Checked in${label ? ` (${label})` : ""}` : `Unchecked${label ? ` (${label})` : ""}`,
       staffName,
       timestamp: Date.now(),
     });
