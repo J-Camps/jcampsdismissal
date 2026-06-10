@@ -39,6 +39,7 @@ export const CAMP_SECTION = v.union(
 
 export const STAFF_ROLE = v.union(
   v.literal("counselor"),
+  v.literal("specialist"),
   v.literal("carline"),
   v.literal("walkup"),
   v.literal("dispatcher"),
@@ -46,6 +47,23 @@ export const STAFF_ROLE = v.union(
   v.literal("director"),
   v.literal("admin"),
 );
+
+export const PERIOD = v.union(
+  v.literal("Period1"),
+  v.literal("Period2"),
+  v.literal("Period3"),
+  v.literal("Period4"),
+  v.literal("Period5"),
+  v.literal("Period6"),
+);
+
+// A staff member's assignment to a specific activity group during a period
+// (used for Upper Camp specialists, and Upper Camp counselors who also run a period).
+export const PERIOD_ASSIGNMENT = v.object({
+  period: PERIOD,
+  group: v.string(),       // e.g. "Swim - Beginners", "Arts & Crafts A"
+  activity: v.optional(v.string()), // human-friendly activity name shown in the UI
+});
 
 export const ATTENDANCE_CHECKPOINT = v.union(
   v.literal("Arrival"),
@@ -104,6 +122,12 @@ export default defineSchema({
     leftEarly: v.optional(v.boolean()),
     tLeftEarly: v.optional(v.number()),
     attendanceNote: v.optional(v.string()),
+
+    // ── Upper Camp period schedule (reset each day is not needed — schedule is static) ──
+    // Maps period -> activity group name, e.g. { Period1: "Swim - Beginners", Period3: "Arts & Crafts A" }
+    periodGroups: v.optional(v.record(v.string(), v.string())),
+    // Per-period attendance for the day, e.g. { Period1: "Present", Period3: "Absent" }
+    periodAttendance: v.optional(v.record(v.string(), v.string())),
   })
     .index("by_code", ["code"])
     .index("by_status", ["status"])
@@ -118,6 +142,8 @@ export default defineSchema({
     role: STAFF_ROLE,
     bunkAssignment: v.optional(v.string()), // for counselors
     runnerLabel: v.optional(v.string()),    // for runners, e.g. "Runner 1"
+    // For specialists, and Upper Camp counselors who also run a period activity group
+    periodAssignments: v.optional(v.array(PERIOD_ASSIGNMENT)),
   }).index("by_code", ["code"]),
 
   // Immutable log of every attendance action

@@ -51,6 +51,11 @@ function avatarBg(name: string): string {
 const fmt = (ts?: number) =>
   ts ? new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—";
 
+const PERIOD_LABEL: Record<string, string> = {
+  Period1: "Period 1", Period2: "Period 2", Period3: "Period 3",
+  Period4: "Period 4", Period5: "Period 5", Period6: "Period 6",
+};
+
 const today = () => new Date().toISOString().split("T")[0];
 
 type StaffDoc  = Doc<"staff">;
@@ -136,6 +141,7 @@ function RoleRouter({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void
     </div>
   );
   if (staff.role === "counselor")  return wrap(<CounselorView staff={staff} />);
+  if (staff.role === "specialist") return wrap(<SpecialistView staff={staff} />);
   if (staff.role === "runner")     return wrap(<RunnerView runnerName={staff.runnerLabel ?? staff.name} />);
   if (staff.role === "carline")    return wrap(<Caller source="Carline" />);
   if (staff.role === "walkup")     return wrap(<Caller source="Walk-Up" />);
@@ -145,7 +151,7 @@ function RoleRouter({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void
 
 function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void }) {
   const labels: Record<string, string> = {
-    counselor:"Counselor", carline:"Carline", walkup:"Walk-Up",
+    counselor:"Counselor", specialist:"Specialist", carline:"Carline", walkup:"Walk-Up",
     dispatcher:"Dispatcher", runner:"Runner", director:"Director", admin:"Admin",
   };
   return (
@@ -527,6 +533,47 @@ function buildGroups(campers: CamperDoc[], mode: "dismissal" | "lunch"): { key: 
 
 function CounselorView({ staff }: { staff: StaffDoc }) {
   const bunk = staff.bunkAssignment ?? "";
+  const periodAssignments = staff.periodAssignments ?? [];
+  const [view, setView] = useState<"bunk" | number>("bunk");
+
+  // Upper Camp counselors who also run a period activity group get a top-level
+  // switch between their bunk roster and their period roster(s).
+  const tabSwitcher = periodAssignments.length > 0 && (
+    <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5 mb-4">
+      <button onClick={() => setView("bunk")}
+        className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors"
+        style={view === "bunk" ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
+        My Bunk
+      </button>
+      {periodAssignments.map((a, i) => (
+        <button key={i} onClick={() => setView(i)}
+          className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors"
+          style={view === i ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
+          {PERIOD_LABEL[a.period] ?? a.period}
+        </button>
+      ))}
+    </div>
+  );
+
+  if (view !== "bunk") {
+    const assignment = periodAssignments[view];
+    return (
+      <div className="space-y-4">
+        {tabSwitcher}
+        <PeriodRosterView assignment={assignment} staffName={staff.name} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {tabSwitcher}
+      <CounselorBunkView staff={staff} bunk={bunk} />
+    </div>
+  );
+}
+
+function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
   const roster        = useQuery(api.campers.getBunkRoster, bunk ? { bunk } : "skip");
   const checkIn       = useMutation(api.campers.confirmWithBunk);
   const doMarkAbsent  = useMutation(api.campers.markAbsent);
@@ -752,6 +799,116 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
         })()}
       </div>
 
+      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode />}
+    </>
+  );
+}
+
+// ─── Specialist View (Upper Camp activity rosters) ───────────────────────────
+
+function SpecialistView({ staff }: { staff: StaffDoc }) {
+  const assignments = staff.periodAssignments ?? [];
+  const [active, setActive] = useState(0);
+
+  if (assignments.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
+        No periods assigned. Contact an administrator.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {assignments.length > 1 && (
+        <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5 overflow-x-auto">
+          {assignments.map((a, i) => (
+            <button key={i} onClick={() => setActive(i)}
+              className="flex-1 py-2 px-2 rounded-xl text-sm font-semibold transition-colors whitespace-nowrap"
+              style={active === i ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
+              {PERIOD_LABEL[a.period] ?? a.period}
+            </button>
+          ))}
+        </div>
+      )}
+      <PeriodRosterView assignment={assignments[active]} staffName={staff.name} />
+    </div>
+  );
+}
+
+function PeriodRosterView({
+  assignment, staffName,
+}: {
+  assignment: { period: string; group: string; activity?: string };
+  staffName: string;
+}) {
+  const roster = useQuery(api.campers.getPeriodRoster, { period: assignment.period, group: assignment.group });
+  const setPeriodAttendance = useMutation(api.campers.setPeriodAttendance);
+  const [selected, setSelected] = useState<CamperDoc | null>(null);
+
+  if (roster === undefined) return <Loading />;
+
+  const present = roster.filter(c => c.periodAttendance?.[assignment.period] === "Present");
+  const absent  = roster.filter(c => c.periodAttendance?.[assignment.period] === "Absent");
+  const unmarked = roster.filter(c => !c.periodAttendance?.[assignment.period]);
+
+  return (
+    <>
+      <div className="space-y-4">
+        <div className="flex items-baseline justify-between">
+          <div>
+            <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{assignment.activity ?? assignment.group}</h2>
+            <p className="text-slate-500 text-sm">{PERIOD_LABEL[assignment.period] ?? assignment.period} · {assignment.group}</p>
+          </div>
+          <span className="text-slate-500 text-sm font-medium">{present.length} / {roster.length}</span>
+        </div>
+
+        <div className="flex gap-2">
+          <Pill value={present.length} label="Present" color="green" />
+          <Pill value={absent.length}  label="Absent"  color="amber" />
+          <Pill value={unmarked.length} label="Unmarked" color="slate" />
+        </div>
+
+        {roster.length === 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
+            No campers scheduled for this group.
+          </div>
+        )}
+
+        <div className="space-y-2">
+          {roster.map(c => {
+            const status = c.periodAttendance?.[assignment.period];
+            const name = c.preferredName ?? c.name;
+            return (
+              <div key={c._id} className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl overflow-hidden">
+                <button onClick={() => setSelected(c)} className="flex items-center gap-3 flex-1 px-4 py-3 text-left active:bg-slate-50">
+                  <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white text-sm font-bold overflow-hidden"
+                    style={{ backgroundColor: avatarBg(c.name) }}>
+                    {c.photoUrl ? <img src={c.photoUrl} alt={name} className="w-full h-full object-cover" /> : name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className="font-medium text-slate-700 text-sm">{name}</span>
+                    <p className="text-xs text-slate-400">{c.bunk}</p>
+                    <AttendanceNoteLine note={c.attendanceNote} />
+                  </div>
+                </button>
+                <div className="flex border-l border-slate-100">
+                  <button
+                    onClick={() => setPeriodAttendance({ id: c._id, period: assignment.period, status: "Present", staffName })}
+                    className={`px-3.5 py-3 text-xs font-semibold transition-colors ${status === "Present" ? "bg-green-100 text-green-700" : "text-slate-400 active:text-green-600"}`}>
+                    Present
+                  </button>
+                  <button
+                    onClick={() => setPeriodAttendance({ id: c._id, period: assignment.period, status: "Absent", staffName })}
+                    className={`px-3.5 py-3 text-xs font-semibold border-l border-slate-100 transition-colors ${status === "Absent" ? "bg-amber-100 text-amber-700" : "text-slate-400 active:text-amber-600"}`}>
+                    Absent
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
       {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode />}
     </>
   );

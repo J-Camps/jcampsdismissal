@@ -59,6 +59,15 @@ export const getBunks = query({
   },
 });
 
+// All campers scheduled into a given activity group during a given period
+export const getPeriodRoster = query({
+  args: { period: v.string(), group: v.string() },
+  handler: async (ctx, { period, group }) => {
+    const all = await ctx.db.query("campers").collect();
+    return all.filter((c) => c.periodGroups?.[period] === group);
+  },
+});
+
 // ─── Existing Mutations ──────────────────────────────────────────────────────
 
 export const callByCode = mutation({
@@ -152,6 +161,7 @@ export const resetDay = mutation({
         leftEarly: undefined,
         tLeftEarly: undefined,
         attendanceNote: undefined,
+        periodAttendance: undefined,
       });
     }
   },
@@ -264,5 +274,29 @@ export const setAttendanceNote = mutation({
   args: { id: v.id("campers"), note: v.string() },
   handler: async (ctx, { id, note }) => {
     await ctx.db.patch(id, { attendanceNote: note.trim() ? note.trim() : undefined });
+  },
+});
+
+// Mark a camper Present/Absent for a specific period (specialists & period-running counselors)
+export const setPeriodAttendance = mutation({
+  args: {
+    id: v.id("campers"),
+    period: v.string(),
+    status: v.union(v.literal("Present"), v.literal("Absent")),
+    staffName: v.string(),
+  },
+  handler: async (ctx, { id, period, status, staffName }) => {
+    const camper = await ctx.db.get(id);
+    if (!camper) return;
+    const periodAttendance = { ...(camper.periodAttendance ?? {}), [period]: status };
+    await ctx.db.patch(id, { periodAttendance });
+    await ctx.db.insert("attendanceLogs", {
+      camperId: id,
+      date: today(),
+      checkpoint: period as "Period1" | "Period2" | "Period3" | "Period4" | "Period5" | "Period6",
+      status: `${status} for ${period}`,
+      staffName,
+      timestamp: Date.now(),
+    });
   },
 });
