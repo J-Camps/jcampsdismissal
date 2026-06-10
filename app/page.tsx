@@ -6,7 +6,7 @@ import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
 import {
   Car, Footprints, Radio, User, Settings, Lock, Search, RotateCcw,
-  Check, ChevronRight, AlertCircle, Clock, MapPin,
+  Check, ChevronRight, AlertCircle, Clock, MapPin, ClipboardList,
 } from "lucide-react";
 
 const ACCESS_CODE = "1234";
@@ -19,6 +19,16 @@ const STATUS_STYLE: Record<string, string> = {
   "Assigned": "bg-blue-100 text-blue-700",
   "Picked Up": "bg-violet-100 text-violet-700",
   "Dismissed": "bg-green-100 text-green-700",
+};
+
+const ATTENDANCE_OPTIONS = ["Present", "Absent", "Expected Late", "Dismissed Early", "Already Dismissed"] as const;
+
+const ATTENDANCE_STYLE: Record<string, string> = {
+  "Present": "bg-green-100 text-green-700",
+  "Absent": "bg-red-100 text-red-700",
+  "Expected Late": "bg-amber-100 text-amber-700",
+  "Dismissed Early": "bg-blue-100 text-blue-700",
+  "Already Dismissed": "bg-slate-200 text-slate-600",
 };
 
 const fmt = (ts?: number) =>
@@ -66,6 +76,7 @@ function AppInner() {
   const tabs = [
     { id: "carline", label: "Carline", icon: Car },
     { id: "walkup", label: "Walk-Up", icon: Footprints },
+    { id: "attendance", label: "Attendance", icon: ClipboardList },
     { id: "dispatcher", label: "Dispatcher", icon: Radio },
     { id: "runner", label: "Runner", icon: User },
     { id: "admin", label: "Admin", icon: Settings },
@@ -98,6 +109,7 @@ function AppInner() {
         {(role === "carline" || role === "walkup") && (
           <Caller source={role === "carline" ? "Carline" : "Walk-Up"} />
         )}
+        {role === "attendance" && <AttendanceView />}
         {role === "dispatcher" && <Dispatcher />}
         {role === "runner" && <RunnerView />}
         {role === "admin" && <Admin />}
@@ -225,6 +237,92 @@ function Caller({ source }: { source: "Carline" | "Walk-Up" }) {
               className="w-full bg-amber-500 text-white rounded-xl py-3 font-semibold mt-4 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed">
               Call {selectedIds.length > 0 ? `${selectedIds.length} ` : ""}Camper{selectedIds.length === 1 ? "" : "s"}
             </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AttendanceView() {
+  const campers = useQuery(api.campers.list);
+  const setStatus = useMutation(api.campers.setAttendanceStatus);
+  const [q, setQ] = useState("");
+
+  if (campers === undefined) return <Loading />;
+
+  const counts: Record<string, number> = {
+    "Present": 0, "Absent": 0, "Expected Late": 0, "Dismissed Early": 0, "Already Dismissed": 0,
+  };
+  campers.forEach((c) => { counts[c.attendanceStatus ?? "Present"]++; });
+
+  const filtered = campers.filter((c) => {
+    const s = q.toLowerCase();
+    return !s || c.name.toLowerCase().includes(s) || c.bunk.toLowerCase().includes(s);
+  });
+
+  // Group by bunk
+  const byBunk: Record<string, Doc<"campers">[]> = {};
+  for (const c of filtered) {
+    (byBunk[c.bunk] ??= []).push(c);
+  }
+  const bunks = Object.keys(byBunk).sort();
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-4">
+        <ClipboardList size={22} className="text-slate-700" />
+        <h2 className="text-xl font-bold text-slate-900">Attendance</h2>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
+        {ATTENDANCE_OPTIONS.map((s) => (
+          <div key={s} className="bg-white rounded-xl border border-slate-200 p-4 text-center shadow-sm">
+            <p className="text-2xl font-bold text-slate-900">{counts[s]}</p>
+            <p className="text-xs text-slate-500 mt-0.5">{s}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="relative mb-4">
+        <Search size={18} className="absolute left-3 top-3 text-slate-400" />
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name or bunk…"
+          className="w-full pl-10 pr-3 py-2.5 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900" />
+      </div>
+
+      <div className="space-y-5">
+        {bunks.map((bunk) => (
+          <div key={bunk}>
+            <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide mb-2">{bunk}</h3>
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm divide-y divide-slate-100">
+              {byBunk[bunk].map((c) => {
+                const current = c.attendanceStatus ?? "Present";
+                return (
+                  <div key={c._id} className="flex items-center justify-between gap-3 px-4 py-3 flex-wrap">
+                    <p className="font-medium text-slate-900">{c.name}</p>
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${ATTENDANCE_STYLE[current]}`}>
+                        {current}
+                      </span>
+                      <select
+                        value={current}
+                        onChange={(e) => setStatus({ id: c._id, attendanceStatus: e.target.value as typeof ATTENDANCE_OPTIONS[number] })}
+                        className="text-sm border border-slate-300 rounded-lg py-1.5 px-2 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                      >
+                        {ATTENDANCE_OPTIONS.map((opt) => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        {bunks.length === 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
+            No campers found.
           </div>
         )}
       </div>
@@ -420,7 +518,7 @@ function Admin() {
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-500 text-left">
               <tr>
-                {["Camper", "Bunk", "Code", "Source", "Runner", "Status"].map((h) => (
+                {["Camper", "Bunk", "Code", "Source", "Runner", "Status", "Attendance"].map((h) => (
                   <th key={h} className="px-4 py-2.5 font-medium">{h}</th>
                 ))}
               </tr>
@@ -434,6 +532,11 @@ function Admin() {
                   <td className="px-4 py-2.5 text-slate-600">{c.callSource || "—"}</td>
                   <td className="px-4 py-2.5 text-slate-600">{c.runner || "—"}</td>
                   <td className="px-4 py-2.5"><StatusBadge status={c.status} /></td>
+                  <td className="px-4 py-2.5">
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${ATTENDANCE_STYLE[c.attendanceStatus ?? "Present"]}`}>
+                      {c.attendanceStatus ?? "Present"}
+                    </span>
+                  </td>
                 </tr>
               ))}
             </tbody>

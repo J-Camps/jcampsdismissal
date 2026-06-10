@@ -1,5 +1,6 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { ATTENDANCE_STATUS } from "./schema";
 
 export const list = query({
   args: {},
@@ -115,7 +116,15 @@ export const resetDay = mutation({
       await ctx.db.patch(c._id, {
         status: "Waiting", callSource: undefined, runner: undefined, note: undefined,
         tCalled: undefined, tAssigned: undefined, tPickedUp: undefined, tDismissed: undefined,
+        attendanceStatus: undefined,
       });
     }
+  },
+});
+
+export const setAttendanceStatus = mutation({
+  args: { id: v.id("campers"), attendanceStatus: ATTENDANCE_STATUS },
+  handler: async (ctx, { id, attendanceStatus }) => {
+    await ctx.db.patch(id, { attendanceStatus });
   },
 });
