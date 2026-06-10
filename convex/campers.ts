@@ -18,6 +18,18 @@ export const getByCode = query({
   },
 });
 
+export const searchByName = query({
+  args: { query: v.string() },
+  handler: async (ctx, { query }) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const all = await ctx.db.query("campers").collect();
+    return all
+      .filter((c) => c.name.toLowerCase().includes(q) || c.bunk.toLowerCase().includes(q))
+      .slice(0, 10);
+  },
+});
+
 export const active = query({
   args: {},
   handler: async (ctx) => {
@@ -47,6 +59,18 @@ export const callByCode = mutation({
     for (const c of matches) {
       if (c.status === "Waiting") {
         await ctx.db.patch(c._id, { status: "Called", callSource: source, tCalled: Date.now() });
+      }
+    }
+  },
+});
+
+export const callByIds = mutation({
+  args: { ids: v.array(v.id("campers")), source: v.union(v.literal("Carline"), v.literal("Walk-Up")) },
+  handler: async (ctx, { ids, source }) => {
+    for (const id of ids) {
+      const c = await ctx.db.get(id);
+      if (c && c.status === "Waiting") {
+        await ctx.db.patch(id, { status: "Called", callSource: source, tCalled: Date.now() });
       }
     }
   },

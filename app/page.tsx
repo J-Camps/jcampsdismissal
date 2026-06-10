@@ -108,17 +108,41 @@ function AppInner() {
 
 function Caller({ source }: { source: "Carline" | "Walk-Up" }) {
   const [entry, setEntry] = useState("");
-  const matched = useQuery(
+  const [nameQuery, setNameQuery] = useState("");
+  const [showNameSearch, setShowNameSearch] = useState(false);
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+
+  const codeMatched = useQuery(
     api.campers.getByCode,
     entry.length === 3 ? { code: entry } : "skip"
   );
-  const callByCode = useMutation(api.campers.callByCode);
+  const nameMatched = useQuery(
+    api.campers.searchByName,
+    entry.length === 0 && nameQuery.trim().length >= 2 ? { query: nameQuery.trim() } : "skip"
+  );
+  const callByIds = useMutation(api.campers.callByIds);
 
   const Icon = source === "Carline" ? Car : Footprints;
 
+  const matched = entry.length === 3 ? codeMatched : nameMatched;
+  const matchedKey = matched?.map((c) => c._id).join(",") ?? "";
+
+  useEffect(() => {
+    if (matched) {
+      setSelected(Object.fromEntries(matched.map((c) => [c._id, c.status === "Waiting"])));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchedKey]);
+
+  const selectedIds = (matched ?? []).filter((c) => selected[c._id]).map((c) => c._id);
+
   const call = async () => {
-    await callByCode({ code: entry, source });
+    if (selectedIds.length === 0) return;
+    await callByIds({ ids: selectedIds, source });
     setEntry("");
+    setNameQuery("");
+    setShowNameSearch(false);
+    setSelected({});
   };
 
   return (
@@ -131,32 +155,75 @@ function Caller({ source }: { source: "Carline" | "Walk-Up" }) {
         <label className="text-sm font-medium text-slate-600">Family pickup code</label>
         <input
           value={entry}
-          onChange={(e) => setEntry(e.target.value.replace(/\D/g, "").slice(0, 3))}
+          onChange={(e) => {
+            setEntry(e.target.value.replace(/\D/g, "").slice(0, 3));
+            setNameQuery("");
+            setShowNameSearch(false);
+          }}
           placeholder="000"
           inputMode="numeric"
           className="w-full text-center text-4xl font-bold tracking-widest border border-slate-300 rounded-xl py-4 my-3 focus:outline-none focus:ring-2 focus:ring-slate-900"
         />
 
-        {entry.length === 3 && matched !== undefined && matched.length === 0 && (
+        {entry.length === 3 && codeMatched !== undefined && codeMatched.length === 0 && (
           <p className="text-center text-slate-500 mt-2">No campers found for that code.</p>
+        )}
+
+        {/* Fallback: search by name when the code isn't known */}
+        {entry.length === 0 && (
+          <div className="mt-1">
+            <button onClick={() => setShowNameSearch((v) => !v)} className="text-xs text-slate-400 hover:text-slate-700 underline">
+              Don&apos;t know the code? Search by name
+            </button>
+            {showNameSearch && (
+              <input
+                value={nameQuery}
+                onChange={(e) => setNameQuery(e.target.value)}
+                placeholder="Camper or family name…"
+                className="w-full border border-slate-300 rounded-xl py-2.5 px-3 mt-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+              />
+            )}
+            {nameQuery.trim().length >= 2 && nameMatched !== undefined && nameMatched.length === 0 && (
+              <p className="text-center text-slate-500 mt-2 text-sm">No campers found.</p>
+            )}
+          </div>
         )}
 
         {matched && matched.length > 0 && (
           <div className="mt-2">
-            <p className="text-sm font-medium text-slate-500 mb-2">Campers for code {entry}:</p>
+            <p className="text-sm font-medium text-slate-500 mb-2">
+              {matched.length > 1 ? "Select campers to call:" : "Camper:"}
+            </p>
             <div className="space-y-2">
-              {matched.map((c) => (
-                <div key={c._id} className="flex items-center justify-between bg-slate-50 rounded-lg px-3 py-2.5">
-                  <div>
-                    <p className="font-semibold text-slate-900">{c.name}</p>
-                    <p className="text-xs text-slate-500">{c.bunk}</p>
-                  </div>
-                  <StatusBadge status={c.status} />
-                </div>
-              ))}
+              {matched.map((c) => {
+                const waiting = c.status === "Waiting";
+                return (
+                  <label key={c._id}
+                    className={`flex items-center justify-between rounded-lg px-3 py-2.5 ${waiting ? "bg-slate-50 cursor-pointer" : "bg-slate-50 opacity-60"}`}>
+                    <div className="flex items-center gap-3">
+                      {waiting ? (
+                        <input
+                          type="checkbox"
+                          checked={!!selected[c._id]}
+                          onChange={(e) => setSelected((s) => ({ ...s, [c._id]: e.target.checked }))}
+                          className="w-4 h-4"
+                        />
+                      ) : (
+                        <div className="w-4 h-4" />
+                      )}
+                      <div>
+                        <p className="font-semibold text-slate-900">{c.name}</p>
+                        <p className="text-xs text-slate-500">{c.bunk}</p>
+                      </div>
+                    </div>
+                    <StatusBadge status={c.status} />
+                  </label>
+                );
+              })}
             </div>
-            <button onClick={call} className="w-full bg-amber-500 text-white rounded-xl py-3 font-semibold mt-4 hover:bg-amber-600">
-              Call Campers
+            <button onClick={call} disabled={selectedIds.length === 0}
+              className="w-full bg-amber-500 text-white rounded-xl py-3 font-semibold mt-4 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed">
+              Call {selectedIds.length > 0 ? `${selectedIds.length} ` : ""}Camper{selectedIds.length === 1 ? "" : "s"}
             </button>
           </div>
         )}
