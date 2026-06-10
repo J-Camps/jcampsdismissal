@@ -86,6 +86,16 @@ export const getBusRoster = query({
   },
 });
 
+// All campers who buy lunch (no lunchInfo set means they buy rather than bring).
+// Used by the lunch distributor view to track who has picked up their bought lunch.
+export const getLunchBuyers = query({
+  args: {},
+  handler: async (ctx) => {
+    const all = await ctx.db.query("campers").collect();
+    return all.filter((c) => !c.lunchInfo?.trim());
+  },
+});
+
 // All campers scheduled into a given activity group during a given period
 export const getPeriodRoster = query({
   args: { period: v.string(), group: v.string() },

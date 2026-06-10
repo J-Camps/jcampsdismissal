@@ -49,6 +49,7 @@ export const STAFF_ROLE = v.union(
   v.literal("beforecare"),
   v.literal("aftercare"),
   v.literal("bus"),
+  v.literal("lunch"),
 );
 
 export const PERIOD = v.union(

@@ -147,6 +147,7 @@ const ROLE_META: Record<string, { label: string; icon: React.ComponentType<{ siz
   beforecare: { label: "Before Care",  icon: Clock },
   aftercare:  { label: "After Care",   icon: Clock },
   bus:        { label: "Bus",          icon: Bus },
+  lunch:      { label: "Lunch",        icon: UtensilsCrossed },
   director:   { label: "Director",     icon: Settings },
   admin:      { label: "Admin",        icon: Settings },
 };
@@ -163,6 +164,7 @@ function renderRoleView(role: Role, staff: StaffDoc): React.ReactNode {
     case "beforecare": return <CareView staff={staff} kind="BeforeCare" />;
     case "aftercare":  return <CareView staff={staff} kind="AfterCare" />;
     case "bus":        return <BusView staff={staff} />;
+    case "lunch":      return <LunchDistributorView staff={staff} />;
     default:           return null; // admin/director handled by MultiTabShell
   }
 }
@@ -339,9 +341,9 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName }: { c
       badge: isAbsent ? { label: "Absent", style: "text-amber-600 bg-amber-100" } : undefined,
     },
     {
-      label: "Left for the day",
+      label: "Checked out for dismissal",
       done:  isLeftEarly,
-      badge: isLeftEarly ? { label: "Left Early", style: "text-violet-600 bg-violet-100" } : undefined,
+      badge: isLeftEarly ? { label: "Checked Out", style: "text-violet-600 bg-violet-100" } : undefined,
     },
     { label: "Called for pickup", done: camper.status !== "Waiting", value: camper.status !== "Waiting" ? camper.status : undefined },
     { label: "Runner assigned",   done: !!(camper.runner),           value: camper.runner ?? undefined },
@@ -444,7 +446,7 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName }: { c
           <div>
             <SectionLabel>Today's Status</SectionLabel>
             <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden divide-y divide-slate-100">
-              {checkpoints.filter(cp => cp.done || cp.label !== "Left for the day").map((cp, i) => (
+              {checkpoints.filter(cp => cp.done || cp.label !== "Checked out for dismissal").map((cp, i) => (
                 <div key={i} className="flex items-center gap-3 px-4 py-3.5">
                   <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${
                     cp.badge ? cp.badge.style.match(/bg-\S+/)?.[0] ?? "bg-slate-100" : cp.done ? "bg-green-100" : "bg-slate-100"
@@ -485,13 +487,13 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName }: { c
                 {camper.bunkConfirmed && !isLeftEarly && (
                   <button onClick={() => doMarkOut({ id: camper._id, staffName })}
                     className="text-sm font-semibold text-violet-700 bg-violet-50 rounded-xl py-2.5 active:bg-violet-100">
-                    Mark Out / Left Early
+                    Check Out
                   </button>
                 )}
                 {isLeftEarly && (
                   <button onClick={() => undoMarkOut({ id: camper._id })}
                     className="text-sm font-semibold text-green-700 bg-green-50 rounded-xl py-2.5 active:bg-green-100">
-                    Back to Present
+                    Undo Check Out
                   </button>
                 )}
                 {!isAbsent && (
@@ -612,13 +614,18 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 // ─── Counselor View ───────────────────────────────────────────────────────────
 
-type GroupBy = "dismissal" | "lunch" | "attendance" | "lunchCheck";
+type GroupBy = "dismissal" | "lunch" | "attendance";
+
+// Linear attendance progression shown on a camper card:
+//   none → not checked in yet (action: Check In)
+//   in   → checked in / present (action: Check Out)
+//   out  → checked out for dismissal (terminal; undo via detail sheet)
+type AttendanceCardStatus = "none" | "in" | "out";
 
 const GROUP_BY_OPTIONS: { id: GroupBy; label: string }[] = [
   { id: "attendance", label: "Attendance" },
   { id: "dismissal",  label: "Dismissal"  },
   { id: "lunch",      label: "Lunch"      },
-  { id: "lunchCheck", label: "Lunch Check" },
 ];
 
 // Only used in dismissal + lunch modes (attendance is rendered inline)
@@ -690,6 +697,7 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
 function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
   const roster        = useQuery(api.campers.getBunkRoster, bunk ? { bunk } : "skip");
   const checkIn       = useMutation(api.campers.confirmWithBunk);
+  const checkOut      = useMutation(api.campers.markLeftEarly);
   const [showPresent, setShowPresent] = useState(false);
   const [showAbsent,  setShowAbsent]  = useState(false);
   const [groupBy,     setGroupBy]     = useState<GroupBy>("attendance");
@@ -709,12 +717,20 @@ function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
   const absent       = roster.filter(c => c.arrivalStatus === "Absent");
   const called       = roster.filter(c => c.status === "Called" || c.status === "Assigned");
 
-  // Shared card builders
-  const makeCard  = (c: CamperDoc, present: boolean = false) => (
+  // Shared card builders. In lunch mode, surface a read-only lunch-pickup
+  // pill on buyers' cards (only the lunch distributor can change it).
+  const lunchPickedUpFor = (c: CamperDoc): boolean | undefined => {
+    if (groupBy !== "lunch") return undefined;
+    if (c.lunchInfo?.trim()) return undefined; // bringer — no pickup to track
+    return !!c.dailyCheckpoints?.Lunch;
+  };
+  const makeCard  = (c: CamperDoc, status: AttendanceCardStatus = "none") => (
     <CamperCard key={c._id} camper={c}
-      present={present}
+      status={status}
+      lunchPickedUp={lunchPickedUpFor(c)}
       onTap={() => setSelected(c)}
       onCheckIn={() => checkIn({ id: c._id, staffName: staff.name })}
+      onCheckOut={() => checkOut({ id: c._id, staffName: staff.name })}
     />
   );
   const makeAbsentRow    = (c: CamperDoc) => (
@@ -722,31 +738,27 @@ function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
       onTap={() => setSelected(c)}
     />
   );
-  const makeLeftEarlyRow = (c: CamperDoc) => (
-    <LeftEarlyRow key={c._id} camper={c}
-      onTap={() => setSelected(c)}
-    />
-  );
 
   return (
     <>
       <div className="space-y-4">
-        {/* Bunk header */}
+        {/* Bunk header — checked-in counts everyone who has arrived (still here + checked out) */}
         <div className="flex items-baseline justify-between">
           <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{bunk}</h2>
-          <span className="text-slate-500 text-sm font-medium">{present.length} / {roster.length}</span>
+          <span className="text-slate-500 text-sm font-medium">{present.length + leftEarly.length} / {roster.length}</span>
         </div>
 
         {/* Progress bar */}
         <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
           <div className="h-full rounded-full transition-all duration-500"
-            style={{ width: `${roster.length ? (present.length / roster.length) * 100 : 0}%`, backgroundColor: "#5B8C9D" }} />
+            style={{ width: `${roster.length ? ((present.length + leftEarly.length) / roster.length) * 100 : 0}%`, backgroundColor: "#5B8C9D" }} />
         </div>
 
         {/* Stat pills */}
         <div className="flex gap-2">
-          <Pill value={present.length} label="Present" color="green" />
-          <Pill value={absent.length}  label="Absent"  color="amber" />
+          <Pill value={present.length}   label="Checked In"  color="green" />
+          <Pill value={leftEarly.length} label="Checked Out" color="blue" />
+          <Pill value={absent.length}    label="Absent"      color="amber" />
         </div>
 
         {/* View toggle */}
@@ -787,34 +799,48 @@ function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
         {/* ── ATTENDANCE VIEW ── */}
         {groupBy === "attendance" && (
           <div className="space-y-5">
-            {/* Not Here section */}
-            {(notCheckedIn.length > 0 || absent.length > 0 || leftEarly.length > 0) && (
+            {/* Not Checked In section */}
+            {(notCheckedIn.length > 0 || absent.length > 0) && (
               <div>
                 <div className="flex items-center gap-2 mb-3 px-1">
                   <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">
-                    Not Here
+                    Not Checked In
                   </span>
-                  <span className="text-xs text-slate-400">{notCheckedIn.length + absent.length + leftEarly.length}</span>
+                  <span className="text-xs text-slate-400">{notCheckedIn.length + absent.length}</span>
                 </div>
                 <div className="space-y-2">
-                  {notCheckedIn.map(c => makeCard(c))}
+                  {notCheckedIn.map(c => makeCard(c, "none"))}
                   {absent.map(makeAbsentRow)}
-                  {leftEarly.map(makeLeftEarlyRow)}
                 </div>
               </div>
             )}
 
-            {/* Here section */}
+            {/* Checked In section */}
             {present.length > 0 && (
               <div>
                 <div className="flex items-center gap-2 mb-3 px-1">
                   <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-green-100 text-green-700">
-                    Here
+                    Checked In
                   </span>
                   <span className="text-xs text-slate-400">{present.length}</span>
                 </div>
                 <div className="space-y-2">
-                  {present.map(c => makeCard(c, true))}
+                  {present.map(c => makeCard(c, "in"))}
+                </div>
+              </div>
+            )}
+
+            {/* Checked Out section */}
+            {leftEarly.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-3 px-1">
+                  <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-violet-100 text-violet-700">
+                    Checked Out
+                  </span>
+                  <span className="text-xs text-slate-400">{leftEarly.length}</span>
+                </div>
+                <div className="space-y-2">
+                  {leftEarly.map(c => makeCard(c, "out"))}
                 </div>
               </div>
             )}
@@ -823,23 +849,10 @@ function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
             {notCheckedIn.length === 0 && absent.length === 0 && leftEarly.length === 0 && present.length > 0 && (
               <div className="bg-green-50 border border-green-200 rounded-2xl p-6 text-center">
                 <Check size={32} className="text-green-500 mx-auto mb-2" />
-                <p className="font-bold text-green-800 text-lg">All {present.length} campers here!</p>
+                <p className="font-bold text-green-800 text-lg">All {present.length} campers checked in!</p>
               </div>
             )}
           </div>
-        )}
-
-        {/* ── LUNCH CHECK VIEW ── */}
-        {groupBy === "lunchCheck" && (
-          <CheckpointRosterView
-            campers={present}
-            checkpoint="Lunch"
-            staffName={staff.name}
-            actionLabel="Had Lunch"
-            doneLabel="Had Lunch"
-            groupLabel={bunk}
-            emptyMessage="No campers checked in yet."
-          />
         )}
 
         {/* ── DISMISSAL / LUNCH VIEW ── */}
@@ -859,7 +872,7 @@ function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
                         <span className="text-xs text-slate-400">{group.items.length}</span>
                       </div>
                       <div className="space-y-2">
-                        {group.items.map(c => makeCard(c))}
+                        {group.items.map(c => makeCard(c, "none"))}
                       </div>
                     </div>
                   ))}
@@ -883,30 +896,30 @@ function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
                 </div>
               )}
 
-              {/* Present (collapsible) */}
+              {/* Checked In (collapsible) */}
               {present.length > 0 && (
                 <div>
                   <button onClick={() => setShowPresent(v => !v)}
                     className="flex items-center gap-2 w-full py-3 px-1 text-sm font-semibold text-slate-500 active:text-slate-800">
                     <Check size={16} className="text-green-500" />
-                    {present.length} present
+                    {present.length} checked in
                     {showPresent ? <ChevronUp size={15} className="ml-auto" /> : <ChevronDown size={15} className="ml-auto" />}
                   </button>
                   {showPresent && (
-                    <div className="space-y-2">{present.map(c => makeCard(c, true))}</div>
+                    <div className="space-y-2">{present.map(c => makeCard(c, "in"))}</div>
                   )}
                 </div>
               )}
 
-              {/* Left Early */}
+              {/* Checked Out */}
               {leftEarly.length > 0 && (
-                <div className="space-y-1.5">{leftEarly.map(makeLeftEarlyRow)}</div>
+                <div className="space-y-2">{leftEarly.map(c => makeCard(c, "out"))}</div>
               )}
 
               {notCheckedIn.length === 0 && absent.length === 0 && leftEarly.length === 0 && present.length > 0 && (
                 <div className="bg-green-50 border border-green-200 rounded-2xl p-6 text-center">
                   <Check size={32} className="text-green-500 mx-auto mb-2" />
-                  <p className="font-bold text-green-800 text-lg">All {present.length} campers here!</p>
+                  <p className="font-bold text-green-800 text-lg">All {present.length} campers checked in!</p>
                 </div>
               )}
             </div>
@@ -1138,6 +1151,50 @@ function BusView({ staff }: { staff: StaffDoc }) {
   );
 }
 
+// ─── Lunch Distributor ────────────────────────────────────────────────────────
+
+function LunchDistributorView({ staff }: { staff: StaffDoc }) {
+  const buyers = useQuery(api.campers.getLunchBuyers, {});
+  const [bunkFilter, setBunkFilter] = useState<string>("All");
+
+  if (buyers === undefined) return <Loading />;
+
+  const bunks = ["All", ...Array.from(new Set(buyers.map(c => c.bunk))).sort()];
+  const filtered = bunkFilter === "All" ? buyers : buyers.filter(c => c.bunk === bunkFilter);
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>Lunch Distribution</h2>
+      <p className="text-sm text-slate-500 -mt-2">
+        Track who has picked up their bought lunch. Counselors can see this status but cannot change it.
+      </p>
+
+      {/* Bunk filter */}
+      <div className="flex gap-1.5 overflow-x-auto pb-1">
+        {bunks.map(b => (
+          <button key={b} onClick={() => setBunkFilter(b)}
+            className="px-3.5 py-2 rounded-xl text-sm font-semibold transition-colors flex-shrink-0"
+            style={bunkFilter === b
+              ? { backgroundColor: "#023B64", color: "#fff" }
+              : { color: "#64748b", backgroundColor: "#fff", border: "1px solid #e2e8f0" }}>
+            {b}
+          </button>
+        ))}
+      </div>
+
+      <CheckpointRosterView
+        campers={filtered}
+        checkpoint="Lunch"
+        staffName={staff.name}
+        actionLabel="Picked Up"
+        doneLabel="Picked Up"
+        groupLabel={bunkFilter === "All" ? undefined : bunkFilter}
+        emptyMessage="No buy-lunch campers in this group."
+      />
+    </div>
+  );
+}
+
 // ─── Specialist View (Upper Camp activity rosters) ───────────────────────────
 
 function SpecialistView({ staff }: { staff: StaffDoc }) {
@@ -1259,12 +1316,20 @@ function AttendanceNoteLine({ note }: { note?: string }) {
 }
 
 function CamperCard({
-  camper, onTap, onCheckIn, present,
+  camper, onTap, onCheckIn, onCheckOut, status, lunchPickedUp,
 }: {
   camper: CamperDoc;
   onTap: () => void;
   onCheckIn: () => void;
-  present: boolean;
+  onCheckOut: () => void;
+  // Linear progression: "none" → "in" → "out"
+  status: AttendanceCardStatus;
+  // When defined, render a small read-only lunch pickup indicator on the card.
+  //   true  → green "Lunch ✓"
+  //   false → slate "Lunch pending"
+  // Used by the counselor Lunch tab so they can see lunch distributor status
+  // without being able to change it.
+  lunchPickedUp?: boolean;
 }) {
   const name = camper.preferredName
     ? `${camper.preferredName}${camper.lastName ? " " + camper.lastName : ""}`
@@ -1272,8 +1337,14 @@ function CamperCard({
   const isCalled = camper.status === "Called" || camper.status === "Assigned";
   const bg = avatarBg(camper.name);
 
+  const borderColor = isCalled
+    ? "border-amber-300"
+    : status === "in"  ? "border-green-200"
+    : status === "out" ? "border-violet-200"
+    : "border-slate-200";
+
   return (
-    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${isCalled ? "border-amber-300" : present ? "border-green-200" : "border-slate-200"}`}>
+    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${borderColor}`}>
       {/* Tappable info area */}
       <button onClick={onTap} className="w-full flex items-center gap-3 px-4 py-3.5 text-left active:bg-slate-50">
         {/* Avatar */}
@@ -1295,9 +1366,14 @@ function CamperCard({
             {camper.lunchInfo && <span className="text-xs text-slate-500 flex items-center gap-0.5"><UtensilsCrossed size={10} />{camper.lunchInfo}</span>}
             {isCalled && <StatusBadge status={camper.status} />}
             {!isCalled && (
-              present
-                ? <span className="text-xs font-semibold text-green-600 bg-green-100 px-2 py-0.5 rounded-full">Present</span>
-                : <span className="text-xs text-slate-400 font-medium">Not checked in</span>
+              status === "in"  ? <span className="text-xs font-semibold text-green-600 bg-green-100 px-2 py-0.5 rounded-full">Checked In</span>
+              : status === "out" ? <span className="text-xs font-semibold text-violet-600 bg-violet-100 px-2 py-0.5 rounded-full">Checked Out</span>
+              : <span className="text-xs text-slate-400 font-medium">Not checked in</span>
+            )}
+            {lunchPickedUp !== undefined && (
+              lunchPickedUp
+                ? <span className="text-xs font-semibold text-green-700 bg-green-100 px-2 py-0.5 rounded-full flex items-center gap-0.5"><UtensilsCrossed size={10} />Lunch ✓</span>
+                : <span className="text-xs font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full flex items-center gap-0.5"><UtensilsCrossed size={10} />Lunch pending</span>
             )}
           </div>
           <AttendanceNoteLine note={camper.attendanceNote} />
@@ -1306,19 +1382,31 @@ function CamperCard({
       </button>
 
       {/* Action row */}
-      <div className={`border-t flex ${present ? "border-green-100" : "border-slate-100"}`}>
-        {present ? (
-          <div className="flex-1 py-3.5 text-sm font-bold flex items-center justify-center gap-1.5 bg-green-50 text-green-700">
-            <Check size={15} /> Present
-          </div>
-        ) : (
+      {status === "none" && (
+        <div className="border-t border-slate-100 flex">
           <button onClick={onCheckIn}
             className="flex-1 py-3.5 text-sm font-bold text-white flex items-center justify-center gap-1.5 transition-colors active:opacity-80"
             style={{ backgroundColor: "#023B64" }}>
             <Check size={15} /> Check In
           </button>
-        )}
-      </div>
+        </div>
+      )}
+      {status === "in" && (
+        <div className="border-t border-green-100 flex">
+          <button onClick={onCheckOut}
+            className="flex-1 py-3.5 text-sm font-bold text-white flex items-center justify-center gap-1.5 transition-colors active:opacity-80"
+            style={{ backgroundColor: "#5B8C9D" }}>
+            <LogOut size={15} /> Check Out
+          </button>
+        </div>
+      )}
+      {status === "out" && (
+        <div className="border-t border-violet-100 flex">
+          <div className="flex-1 py-3.5 text-sm font-bold flex items-center justify-center gap-1.5 bg-violet-50 text-violet-700">
+            <Check size={15} /> Checked Out
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1342,29 +1430,6 @@ function AbsentRow({ camper, onTap }: {
       </div>
       <span className="text-xs font-semibold text-amber-600 bg-amber-100 px-2 py-0.5 rounded-full flex-shrink-0">Absent</span>
       <ArrowRight size={14} className="text-amber-300 flex-shrink-0" />
-    </button>
-  );
-}
-
-function LeftEarlyRow({ camper, onTap }: {
-  camper: CamperDoc;
-  onTap: () => void;
-}) {
-  const name = camper.preferredName ?? camper.name;
-  return (
-    <button onClick={onTap} className="w-full flex items-center gap-3 bg-violet-50 border border-violet-100 rounded-xl px-4 py-3 text-left active:bg-violet-100">
-      <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-white text-sm font-bold overflow-hidden"
-        style={{ backgroundColor: avatarBg(camper.name) }}>
-        {camper.photoUrl
-          ? <img src={camper.photoUrl} alt={name} className="w-full h-full object-cover" />
-          : (camper.preferredName ?? camper.name).charAt(0).toUpperCase()}
-      </div>
-      <div className="flex-1 min-w-0">
-        <span className="font-medium text-slate-700 text-sm">{name}</span>
-        <AttendanceNoteLine note={camper.attendanceNote} />
-      </div>
-      <span className="text-xs font-semibold text-violet-600 bg-violet-100 px-2 py-0.5 rounded-full flex-shrink-0">Left Early</span>
-      <ArrowRight size={14} className="text-violet-300 flex-shrink-0" />
     </button>
   );
 }
