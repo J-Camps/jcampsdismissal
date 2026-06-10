@@ -1365,11 +1365,6 @@ function CamperCard({
             {camper.grade     && <span className="text-xs text-slate-400">{camper.grade}</span>}
             {camper.lunchInfo && <span className="text-xs text-slate-500 flex items-center gap-0.5"><UtensilsCrossed size={10} />{camper.lunchInfo}</span>}
             {isCalled && <StatusBadge status={camper.status} />}
-            {!isCalled && (
-              status === "in"  ? <span className="text-xs font-semibold text-green-600 bg-green-100 px-2 py-0.5 rounded-full">Checked In</span>
-              : status === "out" ? <span className="text-xs font-semibold text-violet-600 bg-violet-100 px-2 py-0.5 rounded-full">Checked Out</span>
-              : <span className="text-xs text-slate-400 font-medium">Not checked in</span>
-            )}
             {lunchPickedUp !== undefined && (
               lunchPickedUp
                 ? <span className="text-xs font-semibold text-green-700 bg-green-100 px-2 py-0.5 rounded-full flex items-center gap-0.5"><UtensilsCrossed size={10} />Lunch ✓</span>
