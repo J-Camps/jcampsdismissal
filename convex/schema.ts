@@ -155,7 +155,12 @@ export default defineSchema({
   staff: defineTable({
     name: v.string(),
     code: v.string(),
+    // Primary role (shown in header). Kept for backward compat.
     role: STAFF_ROLE,
+    // Additional roles a single staff code grants access to.
+    // E.g. a counselor who also runs Before Care and is a runner:
+    //   role: "counselor", extraRoles: ["beforecare", "runner"]
+    extraRoles: v.optional(v.array(STAFF_ROLE)),
     bunkAssignment: v.optional(v.string()), // for counselors
     runnerLabel: v.optional(v.string()),    // for runners, e.g. "Runner 1"
     // For specialists, and Upper Camp counselors who also run a period activity group

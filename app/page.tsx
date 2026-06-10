@@ -134,23 +134,105 @@ function LockScreen({ onUnlock }: { onUnlock: (s: StaffDoc) => void }) {
 
 // ─── Role Router ─────────────────────────────────────────────────────────────
 
+// All roles that have a self-service view (vs. the admin/director multi-tab shell).
+type Role = StaffDoc["role"];
+
+const ROLE_META: Record<string, { label: string; icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }> }> = {
+  counselor:  { label: "Bunk",         icon: BookOpen },
+  specialist: { label: "Specialist",   icon: Settings },
+  runner:     { label: "Runner",       icon: User },
+  carline:    { label: "Carline",      icon: Car },
+  walkup:     { label: "Walk-Up",      icon: Footprints },
+  dispatcher: { label: "Dispatcher",   icon: Radio },
+  beforecare: { label: "Before Care",  icon: Clock },
+  aftercare:  { label: "After Care",   icon: Clock },
+  bus:        { label: "Bus",          icon: Bus },
+  director:   { label: "Director",     icon: Settings },
+  admin:      { label: "Admin",        icon: Settings },
+};
+
+// Render the appropriate top-level view for a single role.
+function renderRoleView(role: Role, staff: StaffDoc): React.ReactNode {
+  switch (role) {
+    case "counselor":  return <CounselorView staff={staff} />;
+    case "specialist": return <SpecialistView staff={staff} />;
+    case "runner":     return <RunnerView runnerName={staff.runnerLabel ?? staff.name} />;
+    case "carline":    return <Caller source="Carline" />;
+    case "walkup":     return <Caller source="Walk-Up" />;
+    case "dispatcher": return <Dispatcher />;
+    case "beforecare": return <CareView staff={staff} kind="BeforeCare" />;
+    case "aftercare":  return <CareView staff={staff} kind="AfterCare" />;
+    case "bus":        return <BusView staff={staff} />;
+    default:           return null; // admin/director handled by MultiTabShell
+  }
+}
+
 function RoleRouter({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void }) {
-  const wrap = (child: React.ReactNode) => (
+  // Build deduped list of roles, keeping `role` first.
+  const allRoles: Role[] = [];
+  const seen = new Set<Role>();
+  for (const r of [staff.role, ...(staff.extraRoles ?? [])]) {
+    if (!seen.has(r)) { seen.add(r); allRoles.push(r); }
+  }
+
+  // Admin/director uses the dedicated multi-tab shell.
+  if (allRoles.some(r => r === "admin" || r === "director")) {
+    return <MultiTabShell staff={staff} onLogout={onLogout} />;
+  }
+
+  // Multi-role staff: bottom tab nav between each role's view.
+  if (allRoles.length > 1) {
+    return <MultiRoleShell staff={staff} onLogout={onLogout} roles={allRoles} />;
+  }
+
+  // Single role: render directly.
+  return (
     <div className="min-h-screen" style={{ backgroundColor: "#F6F1E9" }}>
       <MobileHeader staff={staff} onLogout={onLogout} />
-      <main className="px-3 py-5 max-w-lg mx-auto">{child}</main>
+      <main className="px-3 py-5 max-w-lg mx-auto">{renderRoleView(allRoles[0], staff)}</main>
     </div>
   );
-  if (staff.role === "counselor")  return wrap(<CounselorView staff={staff} />);
-  if (staff.role === "specialist") return wrap(<SpecialistView staff={staff} />);
-  if (staff.role === "runner")     return wrap(<RunnerView runnerName={staff.runnerLabel ?? staff.name} />);
-  if (staff.role === "carline")    return wrap(<Caller source="Carline" />);
-  if (staff.role === "walkup")     return wrap(<Caller source="Walk-Up" />);
-  if (staff.role === "dispatcher") return wrap(<Dispatcher />);
-  if (staff.role === "beforecare") return wrap(<CareView staff={staff} kind="BeforeCare" />);
-  if (staff.role === "aftercare")  return wrap(<CareView staff={staff} kind="AfterCare" />);
-  if (staff.role === "bus")        return wrap(<BusView staff={staff} />);
-  return <MultiTabShell staff={staff} onLogout={onLogout} />;
+}
+
+function MultiRoleShell({ staff, onLogout, roles }: { staff: StaffDoc; onLogout: () => void; roles: Role[] }) {
+  const [active, setActive] = useState<Role>(roles[0]);
+  const activeMeta = ROLE_META[active];
+
+  return (
+    <div className="min-h-screen pb-20" style={{ backgroundColor: "#F6F1E9" }}>
+      <header className="sticky top-0 z-20" style={{ backgroundColor: "#023B64" }}>
+        <div className="max-w-lg mx-auto px-4 h-14 flex items-center gap-3">
+          <img src="/jcc-logo.png" alt="JCC Camps" className="h-9 w-auto flex-shrink-0" style={{ filter: "brightness(0) invert(1)" }} />
+          <span className="text-sm text-white/70 truncate flex-1">{staff.name}</span>
+          <span className="text-xs px-2.5 py-1 rounded-full font-medium flex-shrink-0"
+            style={{ backgroundColor: "rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.9)" }}>
+            {activeMeta?.label ?? active}
+          </span>
+          <button onClick={onLogout} className="p-2 text-white/60 active:text-white rounded-xl flex-shrink-0">
+            <LogOut size={18} />
+          </button>
+        </div>
+      </header>
+      <main className="px-3 py-5 max-w-lg mx-auto">{renderRoleView(active, staff)}</main>
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-20 safe-area-bottom">
+        <div className="max-w-lg mx-auto flex">
+          {roles.map(r => {
+            const meta = ROLE_META[r];
+            const Icon = meta?.icon ?? User;
+            const on = active === r;
+            return (
+              <button key={r} onClick={() => setActive(r)}
+                className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 transition-colors"
+                style={{ color: on ? "#023B64" : "#94a3b8" }}>
+                <Icon size={22} strokeWidth={on ? 2.5 : 1.8} />
+                <span className="text-[10px] font-medium leading-none mt-0.5">{meta?.label ?? r}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+    </div>
+  );
 }
 
 function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void }) {
