@@ -149,6 +149,9 @@ export const resetDay = mutation({
         arrivalStatus: undefined,
         arrivalType: undefined,
         bunkConfirmed: undefined,
+        leftEarly: undefined,
+        tLeftEarly: undefined,
+        attendanceNote: undefined,
       });
     }
   },
@@ -226,6 +229,40 @@ export const resetMorningStatus = mutation({
     await ctx.db.patch(id, {
       arrivalStatus: undefined,
       bunkConfirmed: false,
+      leftEarly: undefined,
+      tLeftEarly: undefined,
     });
+  },
+});
+
+// Camper checked in earlier but has now left for the day (still "out")
+export const markLeftEarly = mutation({
+  args: { id: v.id("campers"), staffName: v.string() },
+  handler: async (ctx, { id, staffName }) => {
+    await ctx.db.patch(id, { leftEarly: true, tLeftEarly: Date.now() });
+    await ctx.db.insert("attendanceLogs", {
+      camperId: id,
+      date: today(),
+      checkpoint: "LeftEarly",
+      status: "Left early",
+      staffName,
+      timestamp: Date.now(),
+    });
+  },
+});
+
+// Undo a "left early" mark — camper is back / still here
+export const undoLeftEarly = mutation({
+  args: { id: v.id("campers") },
+  handler: async (ctx, { id }) => {
+    await ctx.db.patch(id, { leftEarly: false, tLeftEarly: undefined });
+  },
+});
+
+// Set or clear a counselor-visible attendance note
+export const setAttendanceNote = mutation({
+  args: { id: v.id("campers"), note: v.string() },
+  handler: async (ctx, { id, note }) => {
+    await ctx.db.patch(id, { attendanceNote: note.trim() ? note.trim() : undefined });
   },
 });

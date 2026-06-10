@@ -61,6 +61,7 @@ export const ATTENDANCE_CHECKPOINT = v.union(
   v.literal("PickedUp"),
   v.literal("SentToBus"),
   v.literal("SentToAfterCare"),
+  v.literal("LeftEarly"),
 );
 
 export default defineSchema({
@@ -100,6 +101,9 @@ export default defineSchema({
     arrivalStatus: v.optional(v.union(v.literal("NotArrived"), v.literal("Arrived"), v.literal("Absent"))),
     arrivalType: v.optional(ARRIVAL_TYPE),
     bunkConfirmed: v.optional(v.boolean()),
+    leftEarly: v.optional(v.boolean()),
+    tLeftEarly: v.optional(v.number()),
+    attendanceNote: v.optional(v.string()),
   })
     .index("by_code", ["code"])
     .index("by_status", ["status"])
