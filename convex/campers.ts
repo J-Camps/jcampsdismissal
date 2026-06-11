@@ -200,6 +200,8 @@ export const resetDay = mutation({
         attendanceNote: undefined,
         periodAttendance: undefined,
         dailyCheckpoints: undefined,
+        lateDropoffTime: undefined,
+        earlyPickupTime: undefined,
       });
     }
   },
@@ -304,6 +306,41 @@ export const undoLeftEarly = mutation({
   args: { id: v.id("campers") },
   handler: async (ctx, { id }) => {
     await ctx.db.patch(id, { leftEarly: false, tLeftEarly: undefined });
+  },
+});
+
+// ── Admin daily flags ─────────────────────────────────────────────────────
+
+// Toggle a camper Absent for the day (admin office flag, set before camp).
+export const setAbsent = mutation({
+  args: { id: v.id("campers"), absent: v.boolean(), staffName: v.string() },
+  handler: async (ctx, { id, absent, staffName }) => {
+    if (absent) {
+      await ctx.db.patch(id, { arrivalStatus: "Absent", bunkConfirmed: false, leftEarly: false });
+      await ctx.db.insert("attendanceLogs", {
+        camperId: id, date: today(), checkpoint: "Arrival",
+        status: "Marked absent", staffName, timestamp: Date.now(),
+      });
+    } else {
+      const c = await ctx.db.get(id);
+      if (c?.arrivalStatus === "Absent") await ctx.db.patch(id, { arrivalStatus: undefined });
+    }
+  },
+});
+
+// Late drop-off flag with arrival time ("HH:MM", empty string clears).
+export const setLateDropoff = mutation({
+  args: { id: v.id("campers"), time: v.string() },
+  handler: async (ctx, { id, time }) => {
+    await ctx.db.patch(id, { lateDropoffTime: time.trim() ? time.trim() : undefined });
+  },
+});
+
+// Early pickup flag with pickup time ("HH:MM", empty string clears).
+export const setEarlyPickup = mutation({
+  args: { id: v.id("campers"), time: v.string() },
+  handler: async (ctx, { id, time }) => {
+    await ctx.db.patch(id, { earlyPickupTime: time.trim() ? time.trim() : undefined });
   },
 });
 

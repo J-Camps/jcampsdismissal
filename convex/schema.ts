@@ -137,6 +137,11 @@ export default defineSchema({
     tLeftEarly: v.optional(v.number()),
     attendanceNote: v.optional(v.string()),
 
+    // ── admin-set daily flags (set before camp starts) ──
+    // Stored as "HH:MM" 24h strings; presence of the string = flag is on.
+    lateDropoffTime: v.optional(v.string()),
+    earlyPickupTime: v.optional(v.string()),
+
     // ── Upper Camp period schedule (reset each day is not needed — schedule is static) ──
     // Maps period -> activity group name, e.g. { Period1: "Swim - Beginners", Period3: "Arts & Crafts A" }
     periodGroups: v.optional(v.record(v.string(), v.string())),
