@@ -1172,6 +1172,125 @@ function RosterCheckCard({
   );
 }
 
+// ─── Generic In/Out Roster (Before/After Care, Bus sheets) ───────────────────
+
+function InOutRosterView({
+  campers, checkpoint, staffName, groupLabel, emptyMessage, inLabel, outLabel,
+}: {
+  campers: CamperDoc[];
+  checkpoint: "BeforeCare" | "AfterCare" | "Bus";
+  staffName: string;
+  groupLabel?: string;
+  emptyMessage?: string;
+  inLabel: string;   // e.g. "Arrived" / "Boarded"
+  outLabel: string;  // e.g. "Left for Bunk" / "Dropped Off"
+}) {
+  const setCheckpoint = useMutation(api.campers.setCheckpoint);
+  const [selected, setSelected] = useState<CamperDoc | null>(null);
+
+  if (campers.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-slate-500">
+        {emptyMessage ?? "No campers in this group."}
+      </div>
+    );
+  }
+
+  const notIn = campers.filter(c => !c.dailyCheckpoints?.[checkpoint]);
+  const here  = campers.filter(c => c.dailyCheckpoints?.[checkpoint] && !c.dailyCheckpointsOut?.[checkpoint]);
+  const out   = campers.filter(c => c.dailyCheckpoints?.[checkpoint] && c.dailyCheckpointsOut?.[checkpoint]);
+
+  const toggleIn = (c: CamperDoc) =>
+    setCheckpoint({ id: c._id, checkpoint, value: !c.dailyCheckpoints?.[checkpoint], staffName, label: groupLabel, phase: "in" });
+  const toggleOut = (c: CamperDoc) =>
+    setCheckpoint({ id: c._id, checkpoint, value: !c.dailyCheckpointsOut?.[checkpoint], staffName, label: groupLabel, phase: "out" });
+
+  const sorted = [...campers].sort((a, b) => camperName(a).localeCompare(camperName(b)));
+
+  return (
+    <>
+      <div className="space-y-4">
+        <div className="flex gap-2">
+          <Pill value={here.length}  label={inLabel}  color="green" />
+          <Pill value={out.length}   label={outLabel} color="blue" />
+          <Pill value={notIn.length} label="Not Yet"  color="slate" />
+        </div>
+
+        <div className="space-y-2">
+          {sorted.map(c => (
+            <InOutCamperRow key={c._id} camper={c} checkpoint={checkpoint}
+              inLabel={inLabel} outLabel={outLabel}
+              onOpenProfile={() => setSelected(c)}
+              onToggleIn={() => toggleIn(c)}
+              onToggleOut={() => toggleOut(c)}
+            />
+          ))}
+        </div>
+      </div>
+
+      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode />}
+    </>
+  );
+}
+
+function InOutCamperRow({
+  camper, checkpoint, inLabel, outLabel, onOpenProfile, onToggleIn, onToggleOut,
+}: {
+  camper: CamperDoc;
+  checkpoint: "BeforeCare" | "AfterCare" | "Bus";
+  inLabel: string;
+  outLabel: string;
+  onOpenProfile: () => void;
+  onToggleIn: () => void;
+  onToggleOut: () => void;
+}) {
+  const name = camperName(camper);
+  const bg = avatarBg(camper.name);
+  const isIn  = !!camper.dailyCheckpoints?.[checkpoint];
+  const isOut = !!camper.dailyCheckpointsOut?.[checkpoint];
+
+  return (
+    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${isOut ? "border-blue-200" : isIn ? "border-green-200" : "border-slate-200"}`}>
+      <button onClick={onOpenProfile} className="w-full flex items-center gap-3 px-4 py-3.5 text-left active:bg-slate-50">
+        <div className="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 font-bold text-lg text-white overflow-hidden"
+          style={{ backgroundColor: bg }}>
+          {camper.photoUrl
+            ? <img src={camper.photoUrl} alt={name} className="w-full h-full object-cover" />
+            : (camper.preferredName ?? camper.name).charAt(0).toUpperCase()}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="font-semibold text-slate-900 text-base leading-tight">{name}</span>
+            {camper.hasAllergies && (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
+                ALLERGY
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-slate-400 mt-0.5">{camper.bunk}</p>
+        </div>
+      </button>
+
+      <div className="border-t border-slate-100 flex">
+        <button onClick={onToggleIn}
+          className="flex-1 py-3.5 text-sm font-bold flex items-center justify-center gap-1.5 transition-colors active:opacity-80"
+          style={isIn ? { backgroundColor: "#dcfce7", color: "#15803d" } : { backgroundColor: "#023B64", color: "#fff" }}>
+          {isIn ? <Check size={15} /> : null}
+          {isIn ? inLabel : inLabel}
+        </button>
+        <button onClick={onToggleOut} disabled={!isIn}
+          className="flex-1 py-3.5 text-sm font-bold flex items-center justify-center gap-1.5 transition-colors active:opacity-80 border-l border-slate-100"
+          style={!isIn
+            ? { backgroundColor: "#f1f5f9", color: "#cbd5e1" }
+            : isOut ? { backgroundColor: "#dbeafe", color: "#1d4ed8" } : { backgroundColor: "#5B8C9D", color: "#fff" }}>
+          {isOut ? <Check size={15} /> : null}
+          {outLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Before / After Care ──────────────────────────────────────────────────────
 
 function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "AfterCare" }) {
@@ -1179,15 +1298,16 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   if (roster === undefined) return <Loading />;
 
   const title = kind === "BeforeCare" ? "Before Care" : "After Care";
+  const outLabel = kind === "BeforeCare" ? "Left for Bunk" : "Picked Up";
   return (
     <div className="space-y-4">
       <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{title}</h2>
-      <CheckpointRosterView
+      <InOutRosterView
         campers={roster}
         checkpoint={kind}
         staffName={staff.name}
-        actionLabel="Check In"
-        doneLabel="Checked In"
+        inLabel="Arrived"
+        outLabel={outLabel}
         groupLabel={title}
         emptyMessage={`No campers are enrolled in ${title}.`}
       />
@@ -1217,12 +1337,12 @@ function BusView({ staff }: { staff: StaffDoc }) {
       </div>
 
       {roster === undefined ? <Loading /> : (
-        <CheckpointRosterView
+        <InOutRosterView
           campers={roster}
           checkpoint="Bus"
           staffName={staff.name}
-          actionLabel="Board"
-          doneLabel="On Bus"
+          inLabel="Boarded"
+          outLabel="Dropped Off"
           groupLabel={route}
           emptyMessage={`No campers assigned to ${route}.`}
         />

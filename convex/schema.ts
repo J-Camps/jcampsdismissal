@@ -148,8 +148,11 @@ export default defineSchema({
     // Per-period attendance for the day, e.g. { Period1: "Present", Period3: "Absent" }
     periodAttendance: v.optional(v.record(v.string(), v.string())),
 
-    // Generic per-day checkpoint check-offs, e.g. { BeforeCare: true, Lunch: true, Bus: true }
+    // Generic per-day checkpoint check-offs — "in" side, e.g. { BeforeCare: true, Lunch: true, Bus: true }
     dailyCheckpoints: v.optional(v.record(v.string(), v.boolean())),
+    // "Out" side of the same checkpoints (e.g. left Before Care, got off the bus).
+    // Only meaningful once the matching dailyCheckpoints entry is true.
+    dailyCheckpointsOut: v.optional(v.record(v.string(), v.boolean())),
   })
     .index("by_code", ["code"])
     .index("by_status", ["status"])

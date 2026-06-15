@@ -200,6 +200,7 @@ export const resetDay = mutation({
         attendanceNote: undefined,
         periodAttendance: undefined,
         dailyCheckpoints: undefined,
+        dailyCheckpointsOut: undefined,
         lateDropoffTime: undefined,
         earlyPickupTime: undefined,
       });
@@ -376,7 +377,8 @@ export const setPeriodAttendance = mutation({
   },
 });
 
-// Generic per-day checkpoint check-off (Before Care, After Care, Lunch, Bus sheets)
+// Generic per-day checkpoint check-off (Before Care, After Care, Lunch, Bus sheets).
+// "in" phase = arrived/checked in; "out" phase = left/departed (only meaningful once "in" is true).
 export const setCheckpoint = mutation({
   args: {
     id: v.id("campers"),
@@ -384,12 +386,33 @@ export const setCheckpoint = mutation({
     value: v.boolean(),
     staffName: v.string(),
     label: v.optional(v.string()), // optional human-friendly group name, e.g. "Bus 3"
+    phase: v.optional(v.union(v.literal("in"), v.literal("out"))), // defaults to "in"
   },
-  handler: async (ctx, { id, checkpoint, value, staffName, label }) => {
+  handler: async (ctx, { id, checkpoint, value, staffName, label, phase = "in" }) => {
     const camper = await ctx.db.get(id);
     if (!camper) return;
+
+    if (phase === "out") {
+      const dailyCheckpointsOut = { ...(camper.dailyCheckpointsOut ?? {}), [checkpoint]: value };
+      await ctx.db.patch(id, { dailyCheckpointsOut });
+      await ctx.db.insert("attendanceLogs", {
+        camperId: id,
+        date: today(),
+        checkpoint,
+        status: value ? `Checked out${label ? ` (${label})` : ""}` : `Undid check out${label ? ` (${label})` : ""}`,
+        staffName,
+        timestamp: Date.now(),
+      });
+      return;
+    }
+
     const dailyCheckpoints = { ...(camper.dailyCheckpoints ?? {}), [checkpoint]: value };
-    await ctx.db.patch(id, { dailyCheckpoints });
+    const patch: Record<string, unknown> = { dailyCheckpoints };
+    // Turning "in" off also clears "out" — can't be checked out without checking in.
+    if (!value && camper.dailyCheckpointsOut?.[checkpoint]) {
+      patch.dailyCheckpointsOut = { ...camper.dailyCheckpointsOut, [checkpoint]: false };
+    }
+    await ctx.db.patch(id, patch);
     await ctx.db.insert("attendanceLogs", {
       camperId: id,
       date: today(),
