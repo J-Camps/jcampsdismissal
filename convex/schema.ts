@@ -50,6 +50,7 @@ export const STAFF_ROLE = v.union(
   v.literal("aftercare"),
   v.literal("bus"),
   v.literal("lunch"),
+  v.literal("unithead"),
 );
 
 export const PERIOD = v.union(
@@ -176,6 +177,8 @@ export default defineSchema({
     periodAssignments: v.optional(v.array(PERIOD_ASSIGNMENT)),
     // For bus / before-care / after-care staff — which group they run, e.g. "Bus 3"
     groupAssignment: v.optional(v.string()),
+    // For unit heads — which camp sections they oversee, e.g. ["Lower", "Middle"]
+    sectionScope: v.optional(v.array(v.string())),
   }).index("by_code", ["code"]),
 
   // Immutable log of every attendance action

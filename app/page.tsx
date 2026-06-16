@@ -163,6 +163,7 @@ const ROLE_META: Record<string, { label: string; icon: React.ComponentType<{ siz
   lunch:      { label: "Lunch",        icon: UtensilsCrossed },
   director:   { label: "Director",     icon: Settings },
   admin:      { label: "Admin",        icon: Settings },
+  unithead:   { label: "Unit Head",    icon: BookOpen },
 };
 
 // Render the appropriate top-level view for a single role.
@@ -178,6 +179,7 @@ function renderRoleView(role: Role, staff: StaffDoc): React.ReactNode {
     case "aftercare":  return <CareView staff={staff} kind="AfterCare" />;
     case "bus":        return <BusView staff={staff} />;
     case "lunch":      return <LunchDistributorView staff={staff} />;
+    case "unithead":   return <CounselorView staff={staff} />;
     default:           return null; // admin/director handled by MultiTabShell
   }
 }
@@ -254,7 +256,7 @@ function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => vo
   const labels: Record<string, string> = {
     counselor:"Counselor", specialist:"Specialist", carline:"Carline", walkup:"Walk-Up",
     dispatcher:"Dispatcher", runner:"Runner", director:"Director", admin:"Admin",
-    beforecare:"Before Care", aftercare:"After Care", bus:"Bus",
+    beforecare:"Before Care", aftercare:"After Care", bus:"Bus", unithead:"Unit Head",
   };
   return (
     <header className="sticky top-0 z-20" style={{ backgroundColor: "#023B64" }}>
@@ -274,15 +276,23 @@ function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => vo
 }
 
 function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void }) {
-  const allTabs = [
-    { id:"carline",    label:"Carline",    icon:Car,      roles:["admin"] },
-    { id:"walkup",     label:"Walk-Up",    icon:Footprints,roles:["admin"] },
-    { id:"dispatcher", label:"Dispatcher", icon:Radio,    roles:["admin"] },
-    { id:"runner",     label:"Runner",     icon:User,     roles:["admin"] },
-    { id:"admin",      label:"Admin",      icon:Settings, roles:["admin","director"] },
+  // All tabs available to admin/director. Admin sees everything; director sees everything too.
+  const tabs = [
+    { id:"carline",    label:"Carline",    icon:Car           },
+    { id:"walkup",     label:"Walk-Up",    icon:Footprints    },
+    { id:"dispatcher", label:"Dispatch",   icon:Radio         },
+    { id:"runner",     label:"Runner",     icon:User          },
+    { id:"bunk",       label:"Bunk",       icon:BookOpen      },
+    { id:"beforecare", label:"BC",         icon:Clock         },
+    { id:"aftercare",  label:"AC",         icon:Clock         },
+    { id:"bus",        label:"Bus",        icon:Bus           },
+    { id:"lunch",      label:"Lunch",      icon:UtensilsCrossed },
+    { id:"admin",      label:"Admin",      icon:Settings      },
   ] as const;
-  const tabs = allTabs.filter(t => (t.roles as readonly string[]).includes(staff.role));
-  const [active, setActive] = useState<string>(tabs[0]?.id ?? "admin");
+
+  type TabId = typeof tabs[number]["id"];
+  const [active, setActive] = useState<TabId>("carline");
+
   return (
     <div className="min-h-screen pb-20" style={{ backgroundColor: "#F6F1E9" }}>
       <header className="sticky top-0 z-20" style={{ backgroundColor: "#023B64" }}>
@@ -299,24 +309,62 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
         {active === "walkup"     && <Caller source="Walk-Up" />}
         {active === "dispatcher" && <Dispatcher />}
         {active === "runner"     && <RunnerAdminView />}
+        {active === "bunk"       && <AdminBunkView staff={staff} />}
+        {active === "beforecare" && <CareView staff={staff} kind="BeforeCare" />}
+        {active === "aftercare"  && <CareView staff={staff} kind="AfterCare" />}
+        {active === "bus"        && <BusView staff={staff} />}
+        {active === "lunch"      && <LunchDistributorView staff={staff} />}
         {active === "admin"      && <Admin />}
       </main>
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-20 safe-area-bottom">
-        <div className="max-w-2xl mx-auto flex">
+        <div className="max-w-2xl mx-auto flex overflow-x-auto">
           {tabs.map(t => {
             const Icon = t.icon;
             const on = active === t.id;
             return (
               <button key={t.id} onClick={() => setActive(t.id)}
-                className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 transition-colors"
+                className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 transition-colors min-w-[52px]"
                 style={{ color: on ? "#023B64" : "#94a3b8" }}>
-                <Icon size={22} strokeWidth={on ? 2.5 : 1.8} />
-                <span className="text-[10px] font-medium leading-none mt-0.5">{t.label}</span>
+                <Icon size={20} strokeWidth={on ? 2.5 : 1.8} />
+                <span className="text-[9px] font-medium leading-none mt-0.5 whitespace-nowrap">{t.label}</span>
               </button>
             );
           })}
         </div>
       </nav>
+    </div>
+  );
+}
+
+function AdminBunkView({ staff }: { staff: StaffDoc }) {
+  const allBunks = useQuery(api.campers.getBunks, {});
+  const [bunk, setBunk] = useState<string>("");
+
+  // Once bunk list loads, default to the first bunk.
+  const bunks = allBunks ?? [];
+  const selectedBunk = bunk || bunks[0] || "";
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>Bunk Roster</h2>
+      {bunks.length > 0 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          {bunks.map(b => (
+            <button key={b} onClick={() => setBunk(b)}
+              className="px-3.5 py-2 rounded-xl text-sm font-semibold transition-colors flex-shrink-0"
+              style={selectedBunk === b
+                ? { backgroundColor: "#023B64", color: "#fff" }
+                : { color: "#64748b", backgroundColor: "#fff", border: "1px solid #e2e8f0" }}>
+              {b}
+            </button>
+          ))}
+        </div>
+      )}
+      {selectedBunk ? (
+        <CounselorBunkView staff={staff} bunk={selectedBunk} />
+      ) : (
+        <Loading />
+      )}
     </div>
   );
 }
