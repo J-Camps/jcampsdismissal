@@ -275,26 +275,39 @@ function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => vo
   );
 }
 
-function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void }) {
-  // All tabs available to admin/director. Admin sees everything; director sees everything too.
-  const tabs = [
-    { id:"carline",    label:"Carline",    icon:Car           },
-    { id:"walkup",     label:"Walk-Up",    icon:Footprints    },
-    { id:"dispatcher", label:"Dispatch",   icon:Radio         },
-    { id:"runner",     label:"Runner",     icon:User          },
-    { id:"bunk",       label:"Bunk",       icon:BookOpen      },
-    { id:"beforecare", label:"BC",         icon:Clock         },
-    { id:"aftercare",  label:"AC",         icon:Clock         },
-    { id:"bus",        label:"Bus",        icon:Bus           },
-    { id:"lunch",      label:"Lunch",      icon:UtensilsCrossed },
-    { id:"admin",      label:"Admin",      icon:Settings      },
-  ] as const;
+type AdminSection = "transport" | "extday" | "bunk" | "lunch" | "admin";
+type TransportSub = "carline" | "walkup" | "dispatcher" | "runner" | "bus";
+type ExtDaySub    = "beforecare" | "aftercare";
 
-  type TabId = typeof tabs[number]["id"];
-  const [active, setActive] = useState<TabId>("carline");
+function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void }) {
+  const [section,  setSection]  = useState<AdminSection>("transport");
+  const [transSub, setTransSub] = useState<TransportSub>("carline");
+  const [extSub,   setExtSub]   = useState<ExtDaySub>("beforecare");
+
+  const sections: { id: AdminSection; label: string }[] = [
+    { id: "transport", label: "Transportation" },
+    { id: "extday",    label: "Extended Day"   },
+    { id: "bunk",      label: "Bunk"           },
+    { id: "lunch",     label: "Lunch"          },
+    { id: "admin",     label: "Admin"          },
+  ];
+
+  const transTabs: { id: TransportSub; label: string }[] = [
+    { id: "carline",    label: "Carline"    },
+    { id: "walkup",     label: "Walk-Up"    },
+    { id: "dispatcher", label: "Dispatcher" },
+    { id: "runner",     label: "Runner"     },
+    { id: "bus",        label: "Bus"        },
+  ];
+
+  const extTabs: { id: ExtDaySub; label: string }[] = [
+    { id: "beforecare", label: "Before Care" },
+    { id: "aftercare",  label: "After Care"  },
+  ];
 
   return (
-    <div className="min-h-screen pb-20" style={{ backgroundColor: "#F6F1E9" }}>
+    <div className="min-h-screen" style={{ backgroundColor: "#F6F1E9" }}>
+      {/* Header */}
       <header className="sticky top-0 z-20" style={{ backgroundColor: "#023B64" }}>
         <div className="max-w-2xl mx-auto px-4 h-14 flex items-center gap-2">
           <img src="/jcc-logo.png" alt="JCC Camps" className="h-9 w-auto mr-auto flex-shrink-0" style={{ filter: "brightness(0) invert(1)" }} />
@@ -303,35 +316,63 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
             <LogOut size={18} />
           </button>
         </div>
-      </header>
-      <main className="max-w-2xl mx-auto px-3 py-5">
-        {active === "carline"    && <Caller source="Carline" />}
-        {active === "walkup"     && <Caller source="Walk-Up" />}
-        {active === "dispatcher" && <Dispatcher />}
-        {active === "runner"     && <RunnerAdminView />}
-        {active === "bunk"       && <AdminBunkView staff={staff} />}
-        {active === "beforecare" && <CareView staff={staff} kind="BeforeCare" />}
-        {active === "aftercare"  && <CareView staff={staff} kind="AfterCare" />}
-        {active === "bus"        && <BusView staff={staff} />}
-        {active === "lunch"      && <LunchDistributorView staff={staff} />}
-        {active === "admin"      && <Admin />}
-      </main>
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-20 safe-area-bottom">
-        <div className="max-w-2xl mx-auto flex overflow-x-auto">
-          {tabs.map(t => {
-            const Icon = t.icon;
-            const on = active === t.id;
-            return (
-              <button key={t.id} onClick={() => setActive(t.id)}
-                className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 transition-colors min-w-[52px]"
-                style={{ color: on ? "#023B64" : "#94a3b8" }}>
-                <Icon size={20} strokeWidth={on ? 2.5 : 1.8} />
-                <span className="text-[9px] font-medium leading-none mt-0.5 whitespace-nowrap">{t.label}</span>
-              </button>
-            );
-          })}
+
+        {/* Section picker — always visible in header */}
+        <div className="flex gap-1 overflow-x-auto px-3 pb-2 scrollbar-none">
+          {sections.map(s => (
+            <button key={s.id} onClick={() => setSection(s.id)}
+              className="flex-shrink-0 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap"
+              style={section === s.id
+                ? { backgroundColor: "rgba(255,255,255,0.25)", color: "#fff" }
+                : { backgroundColor: "transparent", color: "rgba(255,255,255,0.55)" }}>
+              {s.label}
+            </button>
+          ))}
         </div>
-      </nav>
+      </header>
+
+      <main className="max-w-2xl mx-auto px-3 py-5">
+        {section === "transport" && (
+          <>
+            {/* Transportation sub-tabs */}
+            <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5 mb-4 overflow-x-auto">
+              {transTabs.map(t => (
+                <button key={t.id} onClick={() => setTransSub(t.id)}
+                  className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors whitespace-nowrap"
+                  style={transSub === t.id ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {transSub === "carline"    && <Caller source="Carline" />}
+            {transSub === "walkup"     && <Caller source="Walk-Up" />}
+            {transSub === "dispatcher" && <Dispatcher />}
+            {transSub === "runner"     && <RunnerAdminView />}
+            {transSub === "bus"        && <BusView staff={staff} />}
+          </>
+        )}
+
+        {section === "extday" && (
+          <>
+            {/* Extended Day sub-tabs */}
+            <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5 mb-4">
+              {extTabs.map(t => (
+                <button key={t.id} onClick={() => setExtSub(t.id)}
+                  className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors"
+                  style={extSub === t.id ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {extSub === "beforecare" && <CareView staff={staff} kind="BeforeCare" />}
+            {extSub === "aftercare"  && <CareView staff={staff} kind="AfterCare" />}
+          </>
+        )}
+
+        {section === "bunk"  && <AdminBunkView staff={staff} />}
+        {section === "lunch" && <LunchDistributorView staff={staff} />}
+        {section === "admin" && <Admin />}
+      </main>
     </div>
   );
 }
