@@ -657,11 +657,15 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName }: { c
           {(camper.hasAllergies || camper.hasNotes) && (
             <div className="space-y-2">
               {camper.hasAllergies && (
-                <div className="flex items-center gap-3 bg-red-50 border-2 border-red-400 rounded-2xl px-4 py-4">
-                  <AlertTriangle size={24} className="text-red-600 flex-shrink-0" />
+                <div className="flex items-start gap-3 bg-red-50 border-2 border-red-400 rounded-2xl px-4 py-4">
+                  <AlertTriangle size={24} className="text-red-600 flex-shrink-0 mt-0.5" />
                   <div>
                     <p className="font-bold text-red-800 text-base">Allergy Alert</p>
-                    <p className="text-red-700 text-sm mt-0.5">This camper has allergies on file. Check with the office before serving food.</p>
+                    {camper.allergyDetails ? (
+                      <p className="text-red-700 text-sm mt-0.5 font-semibold">{camper.allergyDetails}</p>
+                    ) : (
+                      <p className="text-red-700 text-sm mt-0.5">Allergies on file. Check with the office before serving food.</p>
+                    )}
                   </div>
                 </div>
               )}
@@ -681,8 +685,11 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName }: { c
           <div className="grid grid-cols-2 gap-2.5">
             <InfoTile icon={<MapPin size={16} />}    label="Bunk"         value={camper.bunk} />
             <InfoTile icon={<User size={16} />}      label="Grade"        value={camper.grade ?? "—"} />
+            {camper.camp && (
+              <InfoTile icon={<BookOpen size={16} />} label="Camp" value={camper.campDivision ? `${camper.camp} · ${camper.campDivision}` : camper.camp} />
+            )}
             <InfoTile icon={<Bus size={16} />}       label="Transport"
-              value={TRANSPORT_LABEL[camper.transportationType ?? ""] ?? "—"}
+              value={TRANSPORT_LABEL[camper.transportationType ?? ""] ?? (camper.defaultAfternoonDismissal ?? "—")}
               badge={camper.transportationType ? { label: TRANSPORT_LABEL[camper.transportationType], style: TRANSPORT_STYLE[camper.transportationType] } : undefined}
             />
             {!hideCode && (
@@ -2147,8 +2154,8 @@ function RunnerAdminView() {
 function Admin() {
   const [q, setQ]       = useState("");
   const [selected, setSelected] = useState<CamperDoc | null>(null);
-  const campers  = useQuery(api.campers.list);
-  const resetDay = useMutation(api.campers.resetDay);
+  const campers         = useQuery(api.campers.list);
+  const clearDailyState = useMutation(api.campers.clearDailyState);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { Waiting:0, Called:0, Assigned:0, "Picked Up":0, Dismissed:0 };
@@ -2160,9 +2167,17 @@ function Admin() {
 
   const filtered = campers.filter(c => {
     const s = q.toLowerCase();
-    return !s || c.name.toLowerCase().includes(s) || c.bunk.toLowerCase().includes(s)
-      || c.code.includes(s) || (c.runner ?? "").toLowerCase().includes(s)
-      || c.status.toLowerCase().includes(s) || (c.unit ?? "").toLowerCase().includes(s);
+    if (!s) return true;
+    return c.name.toLowerCase().includes(s)
+      || (c.preferredName ?? "").toLowerCase().includes(s)
+      || (c.lastName ?? "").toLowerCase().includes(s)
+      || c.bunk.toLowerCase().includes(s)
+      || c.code.includes(s)
+      || (c.runner ?? "").toLowerCase().includes(s)
+      || c.status.toLowerCase().includes(s)
+      || (c.unit ?? "").toLowerCase().includes(s)
+      || (c.camp ?? "").toLowerCase().includes(s)
+      || (c.campSection ?? "").toLowerCase().includes(s);
   });
 
   return (
@@ -2171,9 +2186,13 @@ function Admin() {
         <div className="flex items-center gap-2 mb-5">
           <Settings size={22} className="text-slate-700" />
           <h2 className="text-xl font-bold text-slate-900">Admin</h2>
-          <button onClick={() => { if (confirm("Reset all campers to Waiting?")) resetDay(); }}
+          <button onClick={() => {
+            if (confirm("Start new day?\n\nThis clears all today's live attendance (arrivals, bunk check-ins, dismissal status).\n\nDaily overrides, future plans, and attendance history are NOT deleted.")) {
+              clearDailyState();
+            }
+          }}
             className="ml-auto flex items-center gap-1.5 text-sm bg-red-50 text-red-600 px-3 py-2 rounded-xl active:bg-red-100 font-semibold">
-            <RotateCcw size={15} /> Reset Day
+            <RotateCcw size={15} /> Start New Day
           </button>
         </div>
 

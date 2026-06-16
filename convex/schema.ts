@@ -11,6 +11,8 @@ export const STATUS = v.union(
 
 export const SOURCE = v.union(v.literal("Carline"), v.literal("Walk-Up"));
 
+// Legacy combined transport field — kept for backward compat with existing seed data.
+// New code should use defaultMorningArrival / defaultAfternoonDismissal instead.
 export const TRANSPORTATION_TYPE = v.union(
   v.literal("Bus"),
   v.literal("AfterCare"),
@@ -18,11 +20,50 @@ export const TRANSPORTATION_TYPE = v.union(
   v.literal("WalkUp"),
 );
 
-export const ARRIVAL_TYPE = v.union(
-  v.literal("Bus"),
+// ── Morning arrival options ───────────────────────────────────────────────────
+export const MORNING_ARRIVAL = v.union(
+  v.literal("Bus1"),
+  v.literal("Bus2"),
+  v.literal("Bus3"),
+  v.literal("Bus4"),
+  v.literal("Bus5"),
+  v.literal("Bus6"),
   v.literal("Carline"),
   v.literal("BeforeCare"),
   v.literal("WalkIn"),
+  v.literal("LateDropOff"),
+  v.literal("NotExpected"),
+);
+
+// ── Afternoon dismissal options ───────────────────────────────────────────────
+export const AFTERNOON_DISMISSAL = v.union(
+  v.literal("Bus1"),
+  v.literal("Bus2"),
+  v.literal("Bus3"),
+  v.literal("Bus4"),
+  v.literal("Bus5"),
+  v.literal("Bus6"),
+  v.literal("Carline"),
+  v.literal("AfterCare"),
+  v.literal("EarlyPickup"),
+  v.literal("NotExpected"),
+);
+
+// Walk-Up is a call source within Carline dismissal, not its own dismissal type.
+// Carpool = Carline dismissal with a note/override.
+
+export const ARRIVAL_TYPE = v.union(
+  v.literal("Bus"),
+  v.literal("Bus1"),
+  v.literal("Bus2"),
+  v.literal("Bus3"),
+  v.literal("Bus4"),
+  v.literal("Bus5"),
+  v.literal("Bus6"),
+  v.literal("Carline"),
+  v.literal("BeforeCare"),
+  v.literal("WalkIn"),
+  v.literal("LateDropOff"),
   v.literal("Director"),
 );
 
@@ -60,46 +101,100 @@ export const PERIOD = v.union(
   v.literal("Period4"),
   v.literal("Period5"),
   v.literal("Period6"),
+  v.literal("Period7"),
 );
 
-// A staff member's assignment to a specific activity group during a period
-// (used for Upper Camp specialists, and Upper Camp counselors who also run a period).
 export const PERIOD_ASSIGNMENT = v.object({
   period: PERIOD,
-  group: v.string(),       // e.g. "Swim - Beginners", "Arts & Crafts A"
-  activity: v.optional(v.string()), // human-friendly activity name shown in the UI
+  group: v.string(),
+  activity: v.optional(v.string()),
 });
 
 export const ATTENDANCE_CHECKPOINT = v.union(
-  v.literal("Arrival"),
-  v.literal("BunkConfirm"),
+  // ── Morning arrival ──────────────────────────────────────────────────────
+  v.literal("Arrival"),          // generic "arrived on campus"
+  v.literal("MorningBusIn"),     // bus staff: camper is on the morning bus
+  v.literal("MorningBusRoom"),   // bus room staff: camper arrived in JCC room
+  v.literal("MorningBusSentToBunk"), // bus room releases camper toward bunk
+  v.literal("BeforeCare"),       // before care check-in
+  // ── Bunk ────────────────────────────────────────────────────────────────
+  v.literal("BunkConfirm"),      // counselor confirms camper at bunk
+  // ── Periods ─────────────────────────────────────────────────────────────
   v.literal("Period1"),
   v.literal("Period2"),
   v.literal("Period3"),
   v.literal("Period4"),
   v.literal("Period5"),
   v.literal("Period6"),
-  v.literal("Called"),
+  v.literal("Period7"),
+  // ── End-of-day bunk ─────────────────────────────────────────────────────
+  v.literal("BunkSentToAfterCare"), // bunk releases camper toward After Care
+  v.literal("BunkSentToBusRoom"),   // bunk releases camper toward Bus Room
+  v.literal("LeftEarly"),           // early pickup / bunk out
+  // ── Dismissal call ──────────────────────────────────────────────────────
+  v.literal("Called"),           // called for carline/walkup
   v.literal("AssignedRunner"),
   v.literal("PickedUp"),
-  v.literal("SentToBus"),
-  v.literal("SentToAfterCare"),
-  v.literal("LeftEarly"),
-  v.literal("BeforeCare"),
-  v.literal("AfterCare"),
+  // ── After Care ──────────────────────────────────────────────────────────
+  v.literal("AfterCareIn"),      // after care staff: confirmed arrival
+  v.literal("AfterCare"),        // generic after care checkpoint (legacy)
+  v.literal("AfterCareOut"),     // camper left after care
+  // ── Afternoon bus ───────────────────────────────────────────────────────
+  v.literal("AfternoonBusRoomIn"),  // bus room staff: confirmed in bus room
+  v.literal("AfternoonBusOnBoard"), // bus staff: boarded the bus
+  v.literal("AfternoonBusAtStop"),  // reached stop (optional tracking)
+  v.literal("Bus"),                 // generic bus checkpoint (legacy)
+  // ── Other ───────────────────────────────────────────────────────────────
+  v.literal("SentToBus"),           // legacy
+  v.literal("SentToAfterCare"),     // legacy
   v.literal("Lunch"),
-  v.literal("Bus"),
 );
 
-// The 6 bus attendance sheets, used for the "bus" staff role
 export const BUS_ROUTES = ["Bus 1", "Bus 2", "Bus 3", "Bus 4", "Bus 5", "Bus 6"] as const;
 
 export default defineSchema({
   campers: defineTable({
-    // ── existing fields (unchanged) ──
+    // ── Identity ─────────────────────────────────────────────────────────
+    // `name` is the first name (or full display name for legacy records).
+    // New imports should also populate preferredName and lastName separately.
     name: v.string(),
+    preferredName: v.optional(v.string()),
+    lastName: v.optional(v.string()),
+
+    // ── Program placement ────────────────────────────────────────────────
     bunk: v.string(),
+    unit: v.optional(v.string()),
+    grade: v.optional(v.string()),
+    campSection: v.optional(CAMP_SECTION),
+    camp: v.optional(v.string()),         // e.g. "Kaleidoscope", "Swim", "Sports"
+    campDivision: v.optional(v.string()), // sub-group within a camp, if applicable
+
+    // ── Safety ──────────────────────────────────────────────────────────
+    // `code` is the family pickup/safety code. Visible only to dismissal staff and admin.
     code: v.string(),
+
+    // ── Flags ────────────────────────────────────────────────────────────
+    hasAllergies: v.optional(v.boolean()),
+    allergyDetails: v.optional(v.string()), // short allergy summary for counselors
+    hasNotes: v.optional(v.boolean()),
+    lunchInfo: v.optional(v.string()),      // blank = buys lunch, non-blank = what they bring
+
+    // ── Default logistics (permanent plan, not date-scoped) ──────────────
+    // These represent the camper's normal daily setup.
+    defaultMorningArrival: v.optional(v.string()),   // MORNING_ARRIVAL value
+    defaultAfternoonDismissal: v.optional(v.string()), // AFTERNOON_DISMISSAL value
+    // Legacy single transport field — still read for backward compat
+    transportationType: v.optional(TRANSPORTATION_TYPE),
+    busRoute: v.optional(v.string()),   // "Bus 1".."Bus 6" for bus attendance sheets
+    beforeCare: v.optional(v.boolean()),
+    afterCare: v.optional(v.boolean()),
+
+    // ── Photo ────────────────────────────────────────────────────────────
+    photoUrl: v.optional(v.string()),
+
+    // ── Live daily state (reset each morning via clearDailyState) ────────
+    // These fields represent what has actually happened today.
+    // They are intentionally reset at the start of each day.
     status: STATUS,
     callSource: v.optional(SOURCE),
     runner: v.optional(v.string()),
@@ -109,28 +204,6 @@ export default defineSchema({
     tPickedUp: v.optional(v.number()),
     tDismissed: v.optional(v.number()),
 
-    // ── new identity fields ──
-    preferredName: v.optional(v.string()),
-    lastName: v.optional(v.string()),
-    unit: v.optional(v.string()),
-    grade: v.optional(v.string()),
-    campSection: v.optional(CAMP_SECTION), // Lower | Middle | Upper | CIT | Swim | Sports | Tennis | Specialty
-
-    // ── flag fields ──
-    hasAllergies: v.optional(v.boolean()),
-    hasNotes: v.optional(v.boolean()),
-    lunchInfo: v.optional(v.string()),
-
-    // ── logistics ──
-    transportationType: v.optional(TRANSPORTATION_TYPE),
-    busRoute: v.optional(v.string()),     // e.g. "Bus 1".."Bus 6" — for bus attendance sheets
-    beforeCare: v.optional(v.boolean()),  // enrolled in Before Care
-    afterCare: v.optional(v.boolean()),   // enrolled in After Care
-
-    // ── photo ──
-    photoUrl: v.optional(v.string()),
-
-    // ── daily attendance (reset each day) ──
     arrivalStatus: v.optional(v.union(v.literal("NotArrived"), v.literal("Arrived"), v.literal("Absent"))),
     arrivalType: v.optional(ARRIVAL_TYPE),
     bunkConfirmed: v.optional(v.boolean()),
@@ -138,27 +211,21 @@ export default defineSchema({
     tLeftEarly: v.optional(v.number()),
     attendanceNote: v.optional(v.string()),
 
-    // ── admin-set daily flags (set before camp starts) ──
-    // Stored as "HH:MM" 24h strings; presence of the string = flag is on.
-    lateDropoffTime: v.optional(v.string()),
-    earlyPickupTime: v.optional(v.string()),
-
-    // ── Upper Camp period schedule (reset each day is not needed — schedule is static) ──
-    // Maps period -> activity group name, e.g. { Period1: "Swim - Beginners", Period3: "Arts & Crafts A" }
+    // Period schedule (static) and daily attendance (reset each day)
     periodGroups: v.optional(v.record(v.string(), v.string())),
-    // Per-period attendance for the day, e.g. { Period1: "Present", Period3: "Absent" }
     periodAttendance: v.optional(v.record(v.string(), v.string())),
 
-    // Generic per-day checkpoint check-offs — "in" side, e.g. { BeforeCare: true, Lunch: true, Bus: true }
+    // Generic per-day checkpoints
     dailyCheckpoints: v.optional(v.record(v.string(), v.boolean())),
-    // "Out" side of the same checkpoints (e.g. left Before Care, got off the bus).
-    // Only meaningful once the matching dailyCheckpoints entry is true.
     dailyCheckpointsOut: v.optional(v.record(v.string(), v.boolean())),
 
-    // ── one-day arrival / dismissal overrides (set by office before camp) ──
-    // When set, the expected daily path uses this instead of the standing profile.
-    dailyArrivalOverride:   v.optional(v.string()), // "Bus" | "Carline" | "BeforeCare" | "WalkIn"
-    dailyDismissalOverride: v.optional(v.string()), // "Bus" | "Carline" | "WalkUp" | "AfterCare" | "EarlyPickup"
+    // ── Embedded daily flags (DEPRECATED — new writes go to dailyOverrides) ─
+    // These are kept for backward compat with existing records.
+    // The dailyOverrides table is the source of truth for date-scoped plans.
+    lateDropoffTime: v.optional(v.string()),
+    earlyPickupTime: v.optional(v.string()),
+    dailyArrivalOverride: v.optional(v.string()),
+    dailyDismissalOverride: v.optional(v.string()),
   })
     .index("by_code", ["code"])
     .index("by_status", ["status"])
@@ -170,30 +237,45 @@ export default defineSchema({
   staff: defineTable({
     name: v.string(),
     code: v.string(),
-    // Primary role (shown in header). Kept for backward compat.
     role: STAFF_ROLE,
-    // Additional roles a single staff code grants access to.
-    // E.g. a counselor who also runs Before Care and is a runner:
-    //   role: "counselor", extraRoles: ["beforecare", "runner"]
     extraRoles: v.optional(v.array(STAFF_ROLE)),
-    bunkAssignment: v.optional(v.string()), // for counselors
-    runnerLabel: v.optional(v.string()),    // for runners, e.g. "Runner 1"
-    // For specialists, and Upper Camp counselors who also run a period activity group
+    bunkAssignment: v.optional(v.string()),
+    runnerLabel: v.optional(v.string()),
     periodAssignments: v.optional(v.array(PERIOD_ASSIGNMENT)),
-    // For bus / before-care / after-care staff — which group they run, e.g. "Bus 3"
     groupAssignment: v.optional(v.string()),
-    // For unit heads — which camp sections they oversee, e.g. ["Lower", "Middle"]
     sectionScope: v.optional(v.array(v.string())),
   }).index("by_code", ["code"]),
 
-  // Attendance exception resolutions — open exceptions are computed live from camper state;
-  // this table only stores admin/staff resolutions (with notes) so they persist.
+  // ── Date-scoped daily overrides ───────────────────────────────────────────
+  // Every one-day change (arrival, dismissal, late drop-off, early pickup,
+  // absent flag, carpool note) lives here, keyed by camper + date.
+  // These are NEVER wiped by clearDailyState — they survive across day rollovers.
+  // Tomorrow's early pickup entered today will still be here tomorrow.
+  dailyOverrides: defineTable({
+    camperId:           v.id("campers"),
+    date:               v.string(),           // "YYYY-MM-DD"
+    morningArrival:     v.optional(v.string()),   // overrides defaultMorningArrival
+    afternoonDismissal: v.optional(v.string()),   // overrides defaultAfternoonDismissal
+    lateDropoffTime:    v.optional(v.string()),   // "HH:MM" 24h
+    earlyPickupTime:    v.optional(v.string()),   // "HH:MM" 24h
+    isAbsent:           v.optional(v.boolean()),
+    note:               v.optional(v.string()),   // override note (e.g. "Going home with Smith family")
+    createdBy:          v.string(),
+    updatedBy:          v.optional(v.string()),
+    createdAt:          v.number(),
+    updatedAt:          v.optional(v.number()),
+  })
+    .index("by_camper_date", ["camperId", "date"])
+    .index("by_date",        ["date"]),
+
+  // Attendance exception resolutions — open exceptions are computed live;
+  // this table only stores who resolved them and with what note.
   attendanceExceptions: defineTable({
-    camperId:   v.id("campers"),
-    date:       v.string(),          // "YYYY-MM-DD"
-    exceptionType: v.string(),       // e.g. "CAMPUS_NOT_AT_BUNK", "BC_SENT_NOT_AT_BUNK"
-    resolvedBy: v.string(),
-    resolvedAt: v.number(),
+    camperId:       v.id("campers"),
+    date:           v.string(),
+    exceptionType:  v.string(),
+    resolvedBy:     v.string(),
+    resolvedAt:     v.number(),
     resolutionNote: v.optional(v.string()),
   })
     .index("by_camper_date", ["camperId", "date"])
@@ -201,13 +283,13 @@ export default defineSchema({
 
   // Immutable log of every attendance action
   attendanceLogs: defineTable({
-    camperId: v.id("campers"),
-    date: v.string(),          // "YYYY-MM-DD"
+    camperId:   v.id("campers"),
+    date:       v.string(),
     checkpoint: ATTENDANCE_CHECKPOINT,
-    status: v.string(),
-    staffName: v.string(),
-    timestamp: v.number(),
+    status:     v.string(),
+    staffName:  v.string(),
+    timestamp:  v.number(),
   })
     .index("by_camper_date", ["camperId", "date"])
-    .index("by_date", ["date"]),
+    .index("by_date",        ["date"]),
 });

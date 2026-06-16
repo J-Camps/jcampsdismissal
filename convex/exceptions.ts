@@ -8,12 +8,13 @@ const today = () => new Date().toISOString().split("T")[0];
 // Exception types — each corresponds to a specific gap between expected checkpoints.
 // Severity: "high" = camper location unknown on campus | "medium" = handoff gap | "low" = timing issue
 export type ExceptionType =
-  | "CAMPUS_NOT_AT_BUNK"        // arrived (any method) but bunk not confirmed
-  | "BC_SENT_NOT_AT_BUNK"       // BC marked sent-to-bunk but bunk not confirmed
-  | "BUS_ONBOARD_NOT_AT_BUNK"   // bus room out but bunk not confirmed
-  | "CALLED_NOT_PICKED_UP"      // called for pickup >30 min ago, still not dismissed
-  | "SENT_TO_AC_NOT_CONFIRMED"  // bunk sent to AC but AC not checked in
-  | "SENT_TO_BUSROOM_NOT_CONFIRMED"; // bunk sent to bus room but not checked in
+  | "CAMPUS_NOT_AT_BUNK"            // arrived (any method) but bunk not confirmed
+  | "BC_SENT_NOT_AT_BUNK"           // BC marked sent-to-bunk but bunk not confirmed
+  | "BUS_ONBOARD_NOT_AT_BUNK"       // bus room out but bunk not confirmed
+  | "CALLED_NOT_PICKED_UP"          // called for pickup >30 min ago, still not dismissed
+  | "SENT_TO_AC_NOT_CONFIRMED"      // bunk sent to AC but AC not checked in
+  | "SENT_TO_BUSROOM_NOT_CONFIRMED" // bunk sent to bus room but not checked in
+  | "RUNNER_NOT_DISMISSED";         // runner was assigned but camper never marked dismissed
 
 export type ExceptionSeverity = "high" | "medium" | "low";
 
@@ -178,6 +179,54 @@ export const getOpenExceptions = query({
           expectedNextCheckpoint: "After Care In",
           ...(r ? { resolvedBy: r.resolvedBy, resolvedAt: r.resolvedAt, resolutionNote: r.resolutionNote, isResolved: true } : { isResolved: false }),
         });
+      }
+
+      // ── SENT_TO_BUSROOM_NOT_CONFIRMED ─────────────────────────────────────
+      // Bunk sent camper to bus room but bus room has not confirmed arrival.
+      // We track this via dailyCheckpointsOut.Bus = true (bunk sent) vs
+      // dailyCheckpoints.Bus = true (bus room confirmed).
+      const sentToBusRoom = !!c.dailyCheckpointsOut?.Bus;
+      const busRoomConfirmed = !!c.dailyCheckpoints?.Bus;
+      if (sentToBusRoom && !busRoomConfirmed) {
+        const r = resolution("SENT_TO_BUSROOM_NOT_CONFIRMED");
+        exceptions.push({
+          camperId:   c._id,
+          camperName: name,
+          bunk:       c.bunk,
+          campSection: c.campSection,
+          exceptionType: "SENT_TO_BUSROOM_NOT_CONFIRMED",
+          severity:   "high",
+          message:    "Sent to Bus Room but not checked in",
+          detail:     "Bunk marked camper as sent to Bus Room, but Bus Room staff have not confirmed their arrival.",
+          lastCheckpoint:         "Bunk Out / Sent to Bus Room",
+          expectedNextCheckpoint: "Bus Room In",
+          ...(r ? { resolvedBy: r.resolvedBy, resolvedAt: r.resolvedAt, resolutionNote: r.resolutionNote, isResolved: true } : { isResolved: false }),
+        });
+      }
+
+      // ── RUNNER_NOT_DISMISSED ──────────────────────────────────────────────
+      // A runner was assigned and picked up the camper, but the camper was never
+      // marked as dismissed. This catches runners who forget to close the loop.
+      const RUNNER_DISMISS_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
+      if (c.status === "Picked Up" && c.tPickedUp) {
+        const elapsed = now - c.tPickedUp;
+        if (elapsed > RUNNER_DISMISS_TIMEOUT_MS) {
+          const r = resolution("RUNNER_NOT_DISMISSED");
+          exceptions.push({
+            camperId:   c._id,
+            camperName: name,
+            bunk:       c.bunk,
+            campSection: c.campSection,
+            exceptionType: "RUNNER_NOT_DISMISSED",
+            severity:   "medium",
+            message:    `Runner picked up ${Math.floor(elapsed / 60000)} min ago, not dismissed`,
+            detail:     `Camper was marked "Picked Up" by ${c.runner ?? "a runner"} ${Math.floor(elapsed / 60000)} minutes ago but has not been marked as Dismissed.`,
+            lastCheckpoint:         "Runner Picked Up",
+            lastCheckpointTime:     c.tPickedUp,
+            expectedNextCheckpoint: "Dismissed",
+            ...(r ? { resolvedBy: r.resolvedBy, resolvedAt: r.resolvedAt, resolutionNote: r.resolutionNote, isResolved: true } : { isResolved: false }),
+          });
+        }
       }
     }
 

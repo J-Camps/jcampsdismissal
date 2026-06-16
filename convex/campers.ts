@@ -177,7 +177,14 @@ export const dismiss = mutation({
   },
 });
 
-export const resetDay = mutation({
+// Clear live daily state for all campers to start a fresh day.
+// IMPORTANT: this does NOT touch the dailyOverrides table.
+// Future-dated overrides (tomorrow's early pickup, late drop-off, carpool notes, etc.)
+// survive this reset and will be applied correctly on their target date.
+// The embedded legacy override fields (lateDropoffTime, earlyPickupTime,
+// dailyArrivalOverride, dailyDismissalOverride) are also cleared here because
+// they are same-day fields only — date-scoped plans belong in dailyOverrides.
+export const clearDailyState = mutation({
   args: {},
   handler: async (ctx) => {
     const all = await ctx.db.query("campers").collect();
@@ -191,7 +198,6 @@ export const resetDay = mutation({
         tAssigned: undefined,
         tPickedUp: undefined,
         tDismissed: undefined,
-        // reset daily attendance fields
         arrivalStatus: undefined,
         arrivalType: undefined,
         bunkConfirmed: undefined,
@@ -201,6 +207,8 @@ export const resetDay = mutation({
         periodAttendance: undefined,
         dailyCheckpoints: undefined,
         dailyCheckpointsOut: undefined,
+        // Legacy embedded override fields — cleared on rollover.
+        // New override writes go to the dailyOverrides table instead.
         lateDropoffTime: undefined,
         earlyPickupTime: undefined,
         dailyArrivalOverride: undefined,
@@ -209,6 +217,9 @@ export const resetDay = mutation({
     }
   },
 });
+
+// Alias for backward compat — prefer clearDailyState in new code.
+export const resetDay = clearDailyState;
 
 // ─── New Attendance Mutations ────────────────────────────────────────────────
 
@@ -240,7 +251,17 @@ export const updateArrival = mutation({
 export const confirmWithBunk = mutation({
   args: { id: v.id("campers"), staffName: v.string() },
   handler: async (ctx, { id, staffName }) => {
-    await ctx.db.patch(id, { bunkConfirmed: true, arrivalStatus: "Arrived" });
+    const camper = await ctx.db.get(id);
+    if (!camper) return;
+
+    const patch: Record<string, unknown> = { bunkConfirmed: true, arrivalStatus: "Arrived" };
+
+    // Auto-handoff: if camper came from Before Care, mark them as sent-to-bunk there too.
+    if (camper.dailyCheckpoints?.BeforeCare && !camper.dailyCheckpointsOut?.BeforeCare) {
+      patch.dailyCheckpointsOut = { ...(camper.dailyCheckpointsOut ?? {}), BeforeCare: true };
+    }
+
+    await ctx.db.patch(id, patch);
     await ctx.db.insert("attendanceLogs", {
       camperId: id,
       date: today(),
@@ -292,12 +313,33 @@ export const resetMorningStatus = mutation({
 export const markLeftEarly = mutation({
   args: { id: v.id("campers"), staffName: v.string() },
   handler: async (ctx, { id, staffName }) => {
-    await ctx.db.patch(id, { leftEarly: true, tLeftEarly: Date.now() });
+    const camper = await ctx.db.get(id);
+    if (!camper) return;
+
+    const patch: Record<string, unknown> = { leftEarly: true, tLeftEarly: Date.now() };
+
+    // Auto-handoff: when bunk marks a camper out, auto-check them into their next location.
+    const dismissal = camper.dailyDismissalOverride ?? camper.transportationType;
+    const goesToAC  = camper.afterCare || dismissal === "AfterCare";
+    const goesToBus = !goesToAC && dismissal === "Bus";
+
+    if (goesToAC && !camper.dailyCheckpoints?.AfterCare) {
+      // Arrive at After Care automatically
+      patch.dailyCheckpoints = { ...(camper.dailyCheckpoints ?? {}), AfterCare: true };
+    }
+    if (goesToBus && !camper.dailyCheckpoints?.Bus) {
+      // Arrive at Bus Room automatically
+      patch.dailyCheckpoints = { ...(camper.dailyCheckpoints ?? {}), Bus: true };
+    }
+
+    await ctx.db.patch(id, patch);
     await ctx.db.insert("attendanceLogs", {
       camperId: id,
       date: today(),
       checkpoint: "LeftEarly",
-      status: "Left early",
+      status: goesToAC ? "Left bunk → auto-checked into After Care"
+             : goesToBus ? "Left bunk → auto-checked into Bus Room"
+             : "Left bunk",
       staffName,
       timestamp: Date.now(),
     });
@@ -332,33 +374,71 @@ export const setAbsent = mutation({
 });
 
 // Late drop-off flag with arrival time ("HH:MM", empty string clears).
+// Dual-writes: legacy camper field (for same-day display) + dailyOverrides (date-safe).
 export const setLateDropoff = mutation({
-  args: { id: v.id("campers"), time: v.string() },
-  handler: async (ctx, { id, time }) => {
-    await ctx.db.patch(id, { lateDropoffTime: time.trim() ? time.trim() : undefined });
+  args: { id: v.id("campers"), time: v.string(), staffName: v.optional(v.string()) },
+  handler: async (ctx, { id, time, staffName = "Admin" }) => {
+    const val = time.trim() ? time.trim() : undefined;
+    // Update legacy embedded field (still read by bunk row display)
+    await ctx.db.patch(id, { lateDropoffTime: val });
+    // Upsert into date-scoped table so future-day plans survive rollover
+    const d = today();
+    const existing = await ctx.db
+      .query("dailyOverrides")
+      .withIndex("by_camper_date", q => q.eq("camperId", id).eq("date", d))
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, { lateDropoffTime: val, updatedBy: staffName, updatedAt: Date.now() });
+    } else {
+      await ctx.db.insert("dailyOverrides", { camperId: id, date: d, lateDropoffTime: val, createdBy: staffName, createdAt: Date.now() });
+    }
   },
 });
 
 // Early pickup flag with pickup time ("HH:MM", empty string clears).
+// Dual-writes: legacy camper field + dailyOverrides.
 export const setEarlyPickup = mutation({
-  args: { id: v.id("campers"), time: v.string() },
-  handler: async (ctx, { id, time }) => {
-    await ctx.db.patch(id, { earlyPickupTime: time.trim() ? time.trim() : undefined });
+  args: { id: v.id("campers"), time: v.string(), staffName: v.optional(v.string()) },
+  handler: async (ctx, { id, time, staffName = "Admin" }) => {
+    const val = time.trim() ? time.trim() : undefined;
+    await ctx.db.patch(id, { earlyPickupTime: val });
+    const d = today();
+    const existing = await ctx.db
+      .query("dailyOverrides")
+      .withIndex("by_camper_date", q => q.eq("camperId", id).eq("date", d))
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, { earlyPickupTime: val, updatedBy: staffName, updatedAt: Date.now() });
+    } else {
+      await ctx.db.insert("dailyOverrides", { camperId: id, date: d, earlyPickupTime: val, createdBy: staffName, createdAt: Date.now() });
+    }
   },
 });
 
-// Set one-day arrival or dismissal override (admin/office, set before camp starts)
+// Set one-day arrival or dismissal override. Dual-writes.
 export const setDailyOverride = mutation({
   args: {
     id:       v.id("campers"),
     kind:     v.union(v.literal("arrival"), v.literal("dismissal")),
-    override: v.optional(v.string()), // undefined clears the override
+    override: v.optional(v.string()),
+    staffName: v.optional(v.string()),
   },
-  handler: async (ctx, { id, kind, override }) => {
+  handler: async (ctx, { id, kind, override, staffName = "Admin" }) => {
     if (kind === "arrival") {
       await ctx.db.patch(id, { dailyArrivalOverride: override });
     } else {
       await ctx.db.patch(id, { dailyDismissalOverride: override });
+    }
+    const d = today();
+    const field = kind === "arrival" ? "morningArrival" : "afternoonDismissal";
+    const existing = await ctx.db
+      .query("dailyOverrides")
+      .withIndex("by_camper_date", q => q.eq("camperId", id).eq("date", d))
+      .first();
+    if (existing) {
+      await ctx.db.patch(existing._id, { [field]: override, updatedBy: staffName, updatedAt: Date.now() });
+    } else {
+      await ctx.db.insert("dailyOverrides", { camperId: id, date: d, [field]: override, createdBy: staffName, createdAt: Date.now() });
     }
   },
 });
@@ -426,10 +506,28 @@ export const setCheckpoint = mutation({
 
     const dailyCheckpoints = { ...(camper.dailyCheckpoints ?? {}), [checkpoint]: value };
     const patch: Record<string, unknown> = { dailyCheckpoints };
+
     // Turning "in" off also clears "out" — can't be checked out without checking in.
     if (!value && camper.dailyCheckpointsOut?.[checkpoint]) {
       patch.dailyCheckpointsOut = { ...camper.dailyCheckpointsOut, [checkpoint]: false };
     }
+
+    // Auto-handoff cascades (checking INTO a location confirms departure from the prior one):
+    // AC In confirmed → also mark bunk as "out" if not already
+    if (checkpoint === "AfterCare" && value && !camper.leftEarly) {
+      patch.leftEarly   = true;
+      patch.tLeftEarly  = Date.now();
+    }
+    // Bus In confirmed → also mark bunk as "out" if not already
+    if (checkpoint === "Bus" && value && !camper.leftEarly) {
+      patch.leftEarly   = true;
+      patch.tLeftEarly  = Date.now();
+    }
+    // BC In confirmed → mark as on campus (arrivalStatus Arrived)
+    if (checkpoint === "BeforeCare" && value && !camper.arrivalStatus) {
+      patch.arrivalStatus = "Arrived";
+    }
+
     await ctx.db.patch(id, patch);
     await ctx.db.insert("attendanceLogs", {
       camperId: id,
