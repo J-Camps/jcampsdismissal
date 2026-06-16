@@ -277,7 +277,7 @@ function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => vo
   );
 }
 
-type AdminSection = "exceptions" | "transport" | "extday" | "bunk" | "lunch" | "admin";
+type AdminSection = "exceptions" | "transport" | "extday" | "bunk" | "lunch" | "admin" | "staff" | "upload";
 type TransportSub = "carline" | "walkup" | "dispatcher" | "runner" | "bus";
 type ExtDaySub    = "beforecare" | "aftercare";
 
@@ -296,6 +296,8 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
     { id: "bunk",       label: "Bunk"           },
     { id: "lunch",      label: "Lunch"          },
     { id: "admin",      label: "Admin"          },
+    { id: "staff",      label: "Staff"          },
+    { id: "upload",     label: "Upload"         },
   ];
 
   const transTabs: { id: TransportSub; label: string }[] = [
@@ -385,6 +387,8 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
         {section === "bunk"       && <AdminBunkView staff={staff} />}
         {section === "lunch"      && <LunchDistributorView staff={staff} />}
         {section === "admin"      && <Admin />}
+        {section === "staff"      && <StaffManagement />}
+        {section === "upload"     && <CamperUpload />}
       </main>
     </div>
   );
@@ -1056,11 +1060,11 @@ function CounselorBunkView({ staff, bunk, exceptions = [] }: {
 
   const sorted = [...roster].sort((a, b) => camperName(a).localeCompare(camperName(b)));
 
-  // A camper marked "Out" without ever being marked "In" never actually came in today.
+  // Only admin can mark absent — counselor Out without In is just Out, not absent.
   const items: BunkRosterItem[] = sorted.map(c => {
-    const isAbsent  = c.arrivalStatus === "Absent" || (!!c.leftEarly && !c.bunkConfirmed);
-    const arrived   = !!c.bunkConfirmed && !isAbsent;
-    const dismissed = !!c.leftEarly && !isAbsent;
+    const isAbsent  = c.arrivalStatus === "Absent";
+    const arrived   = !!c.bunkConfirmed;
+    const dismissed = !!c.leftEarly;
     return { c, isAbsent, arrived, dismissed };
   });
 
@@ -2258,6 +2262,461 @@ function Admin() {
       </div>
       {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} />}
     </>
+  );
+}
+
+// ─── Staff Management ─────────────────────────────────────────────────────────
+
+const ALL_ROLES: Role[] = ["counselor","specialist","carline","walkup","dispatcher","runner","director","admin","beforecare","aftercare","bus","lunch","unithead"];
+const ROLE_LABEL: Record<string, string> = {
+  counselor:"Counselor",specialist:"Specialist",carline:"Carline",walkup:"Walk-Up",
+  dispatcher:"Dispatcher",runner:"Runner",director:"Director",admin:"Admin",
+  beforecare:"Before Care",aftercare:"After Care",bus:"Bus",lunch:"Lunch",unithead:"Unit Head",
+};
+
+type StaffFormData = {
+  name: string; code: string; role: Role; extraRoles: Role[];
+  bunkAssignment: string; runnerLabel: string;
+};
+
+function StaffManagement() {
+  const staffList = useQuery(api.staff.list);
+  const createStaff = useMutation(api.staff.create);
+  const updateStaff = useMutation(api.staff.update);
+  const removeStaff = useMutation(api.staff.remove);
+  const [q, setQ] = useState("");
+  const [editing, setEditing] = useState<StaffDoc | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+
+  const blank: StaffFormData = { name: "", code: "", role: "counselor", extraRoles: [], bunkAssignment: "", runnerLabel: "" };
+  const [form, setForm] = useState<StaffFormData>(blank);
+
+  const openAdd = () => { setForm(blank); setAdding(true); setEditing(null); setError(""); };
+  const openEdit = (s: StaffDoc) => {
+    setForm({
+      name: s.name, code: s.code, role: s.role as Role,
+      extraRoles: (s.extraRoles ?? []) as Role[],
+      bunkAssignment: s.bunkAssignment ?? "",
+      runnerLabel: s.runnerLabel ?? "",
+    });
+    setEditing(s); setAdding(false); setError("");
+  };
+
+  const handleSave = async () => {
+    if (!form.name.trim() || !form.code.trim()) { setError("Name and code are required"); return; }
+    try {
+      if (editing) {
+        await updateStaff({
+          id: editing._id,
+          name: form.name.trim(),
+          code: form.code.trim(),
+          role: form.role,
+          extraRoles: form.extraRoles.length > 0 ? form.extraRoles : undefined,
+          bunkAssignment: form.bunkAssignment.trim() || undefined,
+          runnerLabel: form.runnerLabel.trim() || undefined,
+        });
+      } else {
+        await createStaff({
+          name: form.name.trim(),
+          code: form.code.trim(),
+          role: form.role,
+          extraRoles: form.extraRoles.length > 0 ? form.extraRoles : undefined,
+          bunkAssignment: form.bunkAssignment.trim() || undefined,
+          runnerLabel: form.runnerLabel.trim() || undefined,
+        });
+      }
+      setEditing(null); setAdding(false); setError("");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    }
+  };
+
+  const handleDelete = async (s: StaffDoc) => {
+    if (!confirm(`Delete ${s.name}?`)) return;
+    await removeStaff({ id: s._id });
+    if (editing?._id === s._id) { setEditing(null); }
+  };
+
+  if (staffList === undefined) return <Loading />;
+
+  const filtered = staffList.filter(s => {
+    if (!q) return true;
+    const low = q.toLowerCase();
+    return s.name.toLowerCase().includes(low) || s.code.includes(low)
+      || s.role.toLowerCase().includes(low) || (s.bunkAssignment ?? "").toLowerCase().includes(low);
+  });
+
+  const showForm = adding || editing;
+
+  return (
+    <>
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <User size={22} className="text-slate-700" />
+          <h2 className="text-xl font-bold text-slate-900">Staff</h2>
+          <span className="text-sm text-slate-400 ml-1">{staffList.length} total</span>
+          <button onClick={openAdd}
+            className="ml-auto flex items-center gap-1.5 text-sm font-semibold text-white px-3 py-2 rounded-xl active:opacity-80"
+            style={{ backgroundColor: "#023B64" }}>
+            + Add Staff
+          </button>
+        </div>
+
+        <div className="relative">
+          <Search size={17} className="absolute left-3.5 top-3.5 text-slate-400" />
+          <input value={q} onChange={e => setQ(e.target.value)}
+            placeholder="Search name, code, role, bunk…"
+            className="w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl focus:outline-none text-sm bg-white"
+            onFocus={e => (e.currentTarget.style.borderColor = "#023B64")}
+            onBlur={e => (e.currentTarget.style.borderColor = "")} />
+        </div>
+
+        <div className="space-y-2">
+          {filtered.map(s => (
+            <div key={s._id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <button onClick={() => openEdit(s)} className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-slate-50">
+                <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white flex-shrink-0"
+                  style={{ backgroundColor: avatarBg(s.name) }}>
+                  {s.name.charAt(0).toUpperCase()}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-slate-900">{s.name}</span>
+                    <span className="text-xs font-mono text-slate-400">{s.code}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full text-white"
+                      style={{ backgroundColor: "#023B64" }}>
+                      {ROLE_LABEL[s.role] ?? s.role}
+                    </span>
+                    {(s.extraRoles ?? []).map(r => (
+                      <span key={r} className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                        {ROLE_LABEL[r] ?? r}
+                      </span>
+                    ))}
+                    {s.bunkAssignment && (
+                      <span className="text-xs text-slate-500">Bunk {s.bunkAssignment}</span>
+                    )}
+                    {s.runnerLabel && (
+                      <span className="text-xs text-slate-500">{s.runnerLabel}</span>
+                    )}
+                  </div>
+                </div>
+                <ChevronRight size={16} className="text-slate-300 flex-shrink-0" />
+              </button>
+            </div>
+          ))}
+          {filtered.length === 0 && (
+            <div className="text-center text-slate-400 py-8">No staff found</div>
+          )}
+        </div>
+      </div>
+
+      {/* Add / Edit modal */}
+      {showForm && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <div className="absolute inset-0 bg-black/60" onClick={() => { setAdding(false); setEditing(null); }} />
+          <div className="relative bg-white rounded-t-3xl overflow-auto max-h-[85vh]">
+            <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 bg-slate-200 rounded-full" /></div>
+            <div className="px-5 pt-2 pb-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-bold text-slate-900">{editing ? "Edit Staff" : "Add Staff"}</h3>
+                {editing && (
+                  <button onClick={() => handleDelete(editing)}
+                    className="text-xs text-red-500 font-semibold px-3 py-1.5 rounded-lg active:bg-red-50">
+                    Delete
+                  </button>
+                )}
+              </div>
+
+              {error && <p className="text-sm text-red-500 font-medium">{error}</p>}
+
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Name</label>
+                <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none"
+                  placeholder="Full name" />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Login Code</label>
+                <input value={form.code} onChange={e => setForm({ ...form, code: e.target.value.replace(/\D/g, "") })}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none font-mono"
+                  placeholder="4-digit code" maxLength={6} inputMode="numeric" />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Primary Role</label>
+                <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value as Role })}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none bg-white">
+                  {ALL_ROLES.map(r => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Extra Roles</label>
+                <div className="flex flex-wrap gap-2">
+                  {ALL_ROLES.filter(r => r !== form.role).map(r => (
+                    <button key={r} onClick={() => {
+                      const has = form.extraRoles.includes(r);
+                      setForm({ ...form, extraRoles: has ? form.extraRoles.filter(x => x !== r) : [...form.extraRoles, r] });
+                    }}
+                      className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border transition-colors ${
+                        form.extraRoles.includes(r)
+                          ? "bg-slate-800 text-white border-slate-800"
+                          : "bg-white text-slate-500 border-slate-200"
+                      }`}>
+                      {ROLE_LABEL[r]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {(form.role === "counselor" || form.extraRoles.includes("counselor")) && (
+                <div>
+                  <label className="text-xs font-semibold text-slate-500 mb-1 block">Bunk Assignment</label>
+                  <input value={form.bunkAssignment} onChange={e => setForm({ ...form, bunkAssignment: e.target.value })}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none"
+                    placeholder="e.g. Asher" />
+                </div>
+              )}
+
+              {(form.role === "runner" || form.extraRoles.includes("runner")) && (
+                <div>
+                  <label className="text-xs font-semibold text-slate-500 mb-1 block">Runner Label</label>
+                  <input value={form.runnerLabel} onChange={e => setForm({ ...form, runnerLabel: e.target.value })}
+                    className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none"
+                    placeholder="e.g. Runner 1" />
+                </div>
+              )}
+
+              <button onClick={handleSave}
+                className="w-full py-3 text-sm font-bold text-white rounded-xl active:opacity-80"
+                style={{ backgroundColor: "#023B64" }}>
+                {editing ? "Save Changes" : "Add Staff Member"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ─── Camper CSV Upload ────────────────────────────────────────────────────────
+
+type CsvRow = Record<string, string>;
+
+function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length === 0) return { headers: [], rows: [] };
+  const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, ""));
+  const rows: CsvRow[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = lines[i].split(",").map(v => v.trim().replace(/^"|"$/g, ""));
+    const row: CsvRow = {};
+    headers.forEach((h, j) => { row[h] = vals[j] ?? ""; });
+    rows.push(row);
+  }
+  return { headers, rows };
+}
+
+const CAMPER_FIELDS = [
+  { key: "name", label: "First Name", required: true },
+  { key: "lastName", label: "Last Name", required: false },
+  { key: "preferredName", label: "Preferred Name", required: false },
+  { key: "bunk", label: "Bunk", required: true },
+  { key: "code", label: "Safety Code", required: true },
+  { key: "grade", label: "Grade", required: false },
+  { key: "unit", label: "Unit", required: false },
+  { key: "campSection", label: "Camp Section", required: false },
+  { key: "camp", label: "Camp", required: false },
+  { key: "campDivision", label: "Camp Division", required: false },
+  { key: "busRoute", label: "Bus Route", required: false },
+  { key: "transportationType", label: "Transport Type", required: false },
+  { key: "lunchInfo", label: "Lunch Info", required: false },
+  { key: "allergyDetails", label: "Allergy Details", required: false },
+  { key: "defaultMorningArrival", label: "Default Morning Arrival", required: false },
+  { key: "defaultAfternoonDismissal", label: "Default Afternoon Dismissal", required: false },
+];
+
+function CamperUpload() {
+  const [step, setStep] = useState<"pick" | "map" | "preview" | "done">("pick");
+  const [csvData, setCsvData] = useState<{ headers: string[]; rows: CsvRow[] }>({ headers: [], rows: [] });
+  const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [uploading, setUploading] = useState(false);
+  const [result, setResult] = useState<{ added: number; errors: string[] }>({ added: 0, errors: [] });
+  const createCamper = useMutation(api.campers.create);
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const parsed = parseCsv(text);
+      setCsvData(parsed);
+      const autoMap: Record<string, string> = {};
+      for (const field of CAMPER_FIELDS) {
+        const match = parsed.headers.find(h =>
+          h.toLowerCase().replace(/[^a-z]/g, "") === field.key.toLowerCase().replace(/[^a-z]/g, "")
+          || h.toLowerCase().includes(field.label.toLowerCase())
+        );
+        if (match) autoMap[field.key] = match;
+      }
+      setMapping(autoMap);
+      setStep("map");
+    };
+    reader.readAsText(file);
+  };
+
+  const requiredMapped = CAMPER_FIELDS.filter(f => f.required).every(f => mapping[f.key]);
+
+  const handleUpload = async () => {
+    setUploading(true);
+    let added = 0;
+    const errors: string[] = [];
+    for (let i = 0; i < csvData.rows.length; i++) {
+      const row = csvData.rows[i];
+      try {
+        const name = row[mapping.name] ?? "";
+        const bunk = row[mapping.bunk] ?? "";
+        const code = row[mapping.code] ?? "";
+        if (!name || !bunk || !code) { errors.push(`Row ${i + 2}: missing required field`); continue; }
+        const camper: Record<string, unknown> = {
+          name, bunk, code, status: "Waiting" as const,
+        };
+        for (const field of CAMPER_FIELDS) {
+          if (field.required) continue;
+          const csvCol = mapping[field.key];
+          if (!csvCol) continue;
+          const val = row[csvCol]?.trim();
+          if (!val) continue;
+          if (field.key === "hasAllergies") {
+            camper[field.key] = val.toLowerCase() === "true" || val === "1" || val.toLowerCase() === "yes";
+          } else {
+            camper[field.key] = val;
+          }
+        }
+        if (camper.allergyDetails && !camper.hasAllergies) camper.hasAllergies = true;
+        if (mapping.lastName && row[mapping.lastName]?.trim()) camper.lastName = row[mapping.lastName].trim();
+        if (mapping.preferredName && row[mapping.preferredName]?.trim()) camper.preferredName = row[mapping.preferredName].trim();
+        await createCamper(camper as Parameters<typeof createCamper>[0]);
+        added++;
+      } catch (err: unknown) {
+        errors.push(`Row ${i + 2}: ${err instanceof Error ? err.message : "failed"}`);
+      }
+    }
+    setResult({ added, errors });
+    setUploading(false);
+    setStep("done");
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <ArrowRight size={22} className="text-slate-700" />
+        <h2 className="text-xl font-bold text-slate-900">Upload Camper Data</h2>
+      </div>
+
+      {step === "pick" && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-6 text-center space-y-4">
+          <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mx-auto">
+            <ArrowRight size={28} className="text-slate-400 rotate-90" />
+          </div>
+          <p className="text-slate-600 font-medium">Upload a CSV file with camper data</p>
+          <p className="text-xs text-slate-400">Required columns: First Name, Bunk, Safety Code</p>
+          <label className="inline-block cursor-pointer">
+            <span className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white rounded-xl active:opacity-80"
+              style={{ backgroundColor: "#023B64" }}>
+              Choose CSV File
+            </span>
+            <input type="file" accept=".csv" onChange={handleFile} className="hidden" />
+          </label>
+        </div>
+      )}
+
+      {step === "map" && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-2xl border border-slate-200 p-4">
+            <p className="text-sm font-semibold text-slate-700 mb-1">
+              {csvData.rows.length} rows found · {csvData.headers.length} columns
+            </p>
+            <p className="text-xs text-slate-400">Map your CSV columns to camper fields</p>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            {CAMPER_FIELDS.map(field => (
+              <div key={field.key} className="flex items-center gap-3 px-4 py-3 border-b border-slate-100 last:border-b-0">
+                <div className="flex-1 min-w-0">
+                  <span className="text-sm font-medium text-slate-900">{field.label}</span>
+                  {field.required && <span className="text-red-500 text-xs ml-1">*</span>}
+                </div>
+                <select value={mapping[field.key] ?? ""}
+                  onChange={e => setMapping({ ...mapping, [field.key]: e.target.value })}
+                  className="text-sm border border-slate-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none max-w-[160px]">
+                  <option value="">— skip —</option>
+                  {csvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                </select>
+              </div>
+            ))}
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-200 p-4">
+            <p className="text-xs font-semibold text-slate-500 mb-2">Preview (first 3 rows)</p>
+            <div className="space-y-2">
+              {csvData.rows.slice(0, 3).map((row, i) => (
+                <div key={i} className="text-xs text-slate-600 bg-slate-50 rounded-lg p-2">
+                  <span className="font-semibold">{row[mapping.name] || "—"}</span>
+                  {mapping.lastName && <span> {row[mapping.lastName]}</span>}
+                  {" · "}
+                  <span>Bunk: {row[mapping.bunk] || "—"}</span>
+                  {" · "}
+                  <span>Code: {row[mapping.code] || "—"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <button onClick={() => setStep("pick")}
+              className="flex-1 py-3 text-sm font-semibold text-slate-500 bg-slate-100 rounded-xl active:bg-slate-200">
+              Back
+            </button>
+            <button onClick={handleUpload} disabled={!requiredMapped || uploading}
+              className="flex-1 py-3 text-sm font-bold text-white rounded-xl active:opacity-80 disabled:opacity-50"
+              style={{ backgroundColor: "#023B64" }}>
+              {uploading ? "Uploading…" : `Upload ${csvData.rows.length} Campers`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === "done" && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
+          <div className="text-center">
+            <CheckCircle2 size={40} className="text-green-500 mx-auto mb-3" />
+            <p className="text-lg font-bold text-slate-900">{result.added} campers uploaded</p>
+            {result.errors.length > 0 && (
+              <p className="text-sm text-red-500 mt-1">{result.errors.length} errors</p>
+            )}
+          </div>
+          {result.errors.length > 0 && (
+            <div className="bg-red-50 rounded-xl p-3 max-h-40 overflow-y-auto">
+              {result.errors.map((err, i) => (
+                <p key={i} className="text-xs text-red-600">{err}</p>
+              ))}
+            </div>
+          )}
+          <button onClick={() => { setStep("pick"); setCsvData({ headers: [], rows: [] }); setMapping({}); }}
+            className="w-full py-3 text-sm font-bold text-white rounded-xl active:opacity-80"
+            style={{ backgroundColor: "#023B64" }}>
+            Upload Another
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

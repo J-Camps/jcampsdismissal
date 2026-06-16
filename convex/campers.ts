@@ -105,6 +105,40 @@ export const getPeriodRoster = query({
   },
 });
 
+// ─── Create ──────────────────────────────────────────────────────────────────
+
+export const create = mutation({
+  args: {
+    name: v.string(),
+    bunk: v.string(),
+    code: v.string(),
+    status: v.optional(v.union(v.literal("Waiting"), v.literal("Called"), v.literal("Assigned"), v.literal("Picked Up"), v.literal("Dismissed"))),
+    preferredName: v.optional(v.string()),
+    lastName: v.optional(v.string()),
+    unit: v.optional(v.string()),
+    grade: v.optional(v.string()),
+    campSection: v.optional(v.union(v.literal("Lower"), v.literal("Middle"), v.literal("Upper"), v.literal("CIT"), v.literal("Swim"), v.literal("Sports"), v.literal("Tennis"), v.literal("Specialty"))),
+    camp: v.optional(v.string()),
+    campDivision: v.optional(v.string()),
+    busRoute: v.optional(v.string()),
+    transportationType: v.optional(v.union(v.literal("Bus"), v.literal("AfterCare"), v.literal("Carline"), v.literal("WalkUp"))),
+    lunchInfo: v.optional(v.string()),
+    hasAllergies: v.optional(v.boolean()),
+    allergyDetails: v.optional(v.string()),
+    hasNotes: v.optional(v.boolean()),
+    beforeCare: v.optional(v.boolean()),
+    afterCare: v.optional(v.boolean()),
+    defaultMorningArrival: v.optional(v.string()),
+    defaultAfternoonDismissal: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.insert("campers", {
+      ...args,
+      status: args.status ?? "Waiting",
+    });
+  },
+});
+
 // ─── Existing Mutations ──────────────────────────────────────────────────────
 
 export const callByCode = mutation({
