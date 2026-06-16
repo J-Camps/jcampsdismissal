@@ -203,6 +203,8 @@ export const resetDay = mutation({
         dailyCheckpointsOut: undefined,
         lateDropoffTime: undefined,
         earlyPickupTime: undefined,
+        dailyArrivalOverride: undefined,
+        dailyDismissalOverride: undefined,
       });
     }
   },
@@ -342,6 +344,22 @@ export const setEarlyPickup = mutation({
   args: { id: v.id("campers"), time: v.string() },
   handler: async (ctx, { id, time }) => {
     await ctx.db.patch(id, { earlyPickupTime: time.trim() ? time.trim() : undefined });
+  },
+});
+
+// Set one-day arrival or dismissal override (admin/office, set before camp starts)
+export const setDailyOverride = mutation({
+  args: {
+    id:       v.id("campers"),
+    kind:     v.union(v.literal("arrival"), v.literal("dismissal")),
+    override: v.optional(v.string()), // undefined clears the override
+  },
+  handler: async (ctx, { id, kind, override }) => {
+    if (kind === "arrival") {
+      await ctx.db.patch(id, { dailyArrivalOverride: override });
+    } else {
+      await ctx.db.patch(id, { dailyDismissalOverride: override });
+    }
   },
 });
 

@@ -10,6 +10,7 @@
 
 import type * as attendanceLogs from "../attendanceLogs.js";
 import type * as campers from "../campers.js";
+import type * as exceptions from "../exceptions.js";
 import type * as staff from "../staff.js";
 
 import type {
@@ -21,6 +22,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   attendanceLogs: typeof attendanceLogs;
   campers: typeof campers;
+  exceptions: typeof exceptions;
   staff: typeof staff;
 }>;
 

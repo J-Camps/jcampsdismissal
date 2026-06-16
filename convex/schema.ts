@@ -154,6 +154,11 @@ export default defineSchema({
     // "Out" side of the same checkpoints (e.g. left Before Care, got off the bus).
     // Only meaningful once the matching dailyCheckpoints entry is true.
     dailyCheckpointsOut: v.optional(v.record(v.string(), v.boolean())),
+
+    // ── one-day arrival / dismissal overrides (set by office before camp) ──
+    // When set, the expected daily path uses this instead of the standing profile.
+    dailyArrivalOverride:   v.optional(v.string()), // "Bus" | "Carline" | "BeforeCare" | "WalkIn"
+    dailyDismissalOverride: v.optional(v.string()), // "Bus" | "Carline" | "WalkUp" | "AfterCare" | "EarlyPickup"
   })
     .index("by_code", ["code"])
     .index("by_status", ["status"])
@@ -180,6 +185,19 @@ export default defineSchema({
     // For unit heads — which camp sections they oversee, e.g. ["Lower", "Middle"]
     sectionScope: v.optional(v.array(v.string())),
   }).index("by_code", ["code"]),
+
+  // Attendance exception resolutions — open exceptions are computed live from camper state;
+  // this table only stores admin/staff resolutions (with notes) so they persist.
+  attendanceExceptions: defineTable({
+    camperId:   v.id("campers"),
+    date:       v.string(),          // "YYYY-MM-DD"
+    exceptionType: v.string(),       // e.g. "CAMPUS_NOT_AT_BUNK", "BC_SENT_NOT_AT_BUNK"
+    resolvedBy: v.string(),
+    resolvedAt: v.number(),
+    resolutionNote: v.optional(v.string()),
+  })
+    .index("by_camper_date", ["camperId", "date"])
+    .index("by_date",        ["date"]),
 
   // Immutable log of every attendance action
   attendanceLogs: defineTable({

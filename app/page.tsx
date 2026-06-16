@@ -8,8 +8,10 @@ import {
   Car, Footprints, Radio, User, Settings, Lock, Search, RotateCcw,
   Check, ChevronRight, AlertCircle, Clock, MapPin,
   AlertTriangle, UtensilsCrossed, LogOut, ChevronDown, ChevronUp,
-  X, Hash, BookOpen, Bus, ArrowRight, StickyNote,
+  X, Hash, BookOpen, Bus, ArrowRight, StickyNote, ShieldAlert,
+  CheckCircle2, ChevronLeft,
 } from "lucide-react";
+import type { AttendanceException } from "@/convex/exceptions";
 
 // ─── Brand colors (JCC Greater Boston) ───────────────────────────────────────
 // Navy #023B64 | Steel Blue #5B8C9D | Pearl #F6F1E9 | Silver Fog #8EB2CB
@@ -275,21 +277,25 @@ function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => vo
   );
 }
 
-type AdminSection = "transport" | "extday" | "bunk" | "lunch" | "admin";
+type AdminSection = "exceptions" | "transport" | "extday" | "bunk" | "lunch" | "admin";
 type TransportSub = "carline" | "walkup" | "dispatcher" | "runner" | "bus";
 type ExtDaySub    = "beforecare" | "aftercare";
 
 function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void }) {
-  const [section,  setSection]  = useState<AdminSection>("transport");
+  const [section,  setSection]  = useState<AdminSection>("exceptions");
   const [transSub, setTransSub] = useState<TransportSub>("carline");
   const [extSub,   setExtSub]   = useState<ExtDaySub>("beforecare");
 
-  const sections: { id: AdminSection; label: string }[] = [
-    { id: "transport", label: "Transportation" },
-    { id: "extday",    label: "Extended Day"   },
-    { id: "bunk",      label: "Bunk"           },
-    { id: "lunch",     label: "Lunch"          },
-    { id: "admin",     label: "Admin"          },
+  const allExceptions = useQuery(api.exceptions.getOpenExceptions, {});
+  const openExCount = allExceptions?.filter(e => !e.isResolved).length ?? 0;
+
+  const sections: { id: AdminSection; label: string; badge?: number }[] = [
+    { id: "exceptions", label: "Exceptions",    badge: openExCount },
+    { id: "transport",  label: "Transportation" },
+    { id: "extday",     label: "Extended Day"   },
+    { id: "bunk",       label: "Bunk"           },
+    { id: "lunch",      label: "Lunch"          },
+    { id: "admin",      label: "Admin"          },
   ];
 
   const transTabs: { id: TransportSub; label: string }[] = [
@@ -321,11 +327,17 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
         <div className="flex gap-1 overflow-x-auto px-3 pb-2 scrollbar-none">
           {sections.map(s => (
             <button key={s.id} onClick={() => setSection(s.id)}
-              className="flex-shrink-0 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap"
+              className="flex-shrink-0 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5"
               style={section === s.id
                 ? { backgroundColor: "rgba(255,255,255,0.25)", color: "#fff" }
                 : { backgroundColor: "transparent", color: "rgba(255,255,255,0.55)" }}>
               {s.label}
+              {(s.badge ?? 0) > 0 && (
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none"
+                  style={{ backgroundColor: "#DC2626", color: "#fff" }}>
+                  {s.badge}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -369,10 +381,155 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
           </>
         )}
 
-        {section === "bunk"  && <AdminBunkView staff={staff} />}
-        {section === "lunch" && <LunchDistributorView staff={staff} />}
-        {section === "admin" && <Admin />}
+        {section === "exceptions" && <ExceptionsView staffName={staff.name} allExceptions={allExceptions} />}
+        {section === "bunk"       && <AdminBunkView staff={staff} />}
+        {section === "lunch"      && <LunchDistributorView staff={staff} />}
+        {section === "admin"      && <Admin />}
       </main>
+    </div>
+  );
+}
+
+// ─── Exceptions View (admin) ──────────────────────────────────────────────────
+
+const SEVERITY_STYLE: Record<string, { dot: string; badge: string; border: string }> = {
+  high:   { dot: "bg-red-500",    badge: "bg-red-100 text-red-700",    border: "border-red-200"   },
+  medium: { dot: "bg-amber-400",  badge: "bg-amber-100 text-amber-700", border: "border-amber-200" },
+  low:    { dot: "bg-blue-400",   badge: "bg-blue-100 text-blue-700",   border: "border-blue-200"  },
+};
+
+function ExceptionsView({ staffName, allExceptions }: {
+  staffName: string;
+  allExceptions?: AttendanceException[];
+}) {
+  const resolveException = useMutation(api.exceptions.resolveException);
+  const [selected, setSelected] = useState<AttendanceException | null>(null);
+  const [noteText, setNoteText] = useState("");
+  const [filter,   setFilter]   = useState<"open" | "all">("open");
+
+  if (allExceptions === undefined) return <Loading />;
+
+  const displayed = filter === "open"
+    ? allExceptions.filter(e => !e.isResolved)
+    : allExceptions;
+
+  const openCount     = allExceptions.filter(e => !e.isResolved).length;
+  const resolvedCount = allExceptions.filter(e => e.isResolved).length;
+  const highCount     = allExceptions.filter(e => !e.isResolved && e.severity === "high").length;
+
+  const handleResolve = async (ex: AttendanceException) => {
+    await resolveException({
+      camperId:       ex.camperId as Parameters<typeof resolveException>[0]["camperId"],
+      exceptionType:  ex.exceptionType,
+      resolvedBy:     staffName,
+      resolutionNote: noteText.trim() || undefined,
+    });
+    setNoteText("");
+    setSelected(null);
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Header + summary */}
+      <div className="flex items-center gap-3">
+        <ShieldAlert size={22} className={highCount > 0 ? "text-red-500" : "text-slate-400"} />
+        <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>Exceptions</h2>
+      </div>
+
+      <div className="flex gap-2">
+        <Pill value={openCount}     label="Open"     color={openCount > 0 ? "amber" : "slate"} />
+        <Pill value={highCount}     label="High"     color={highCount > 0 ? "amber" : "slate"} />
+        <Pill value={resolvedCount} label="Resolved" color="green" />
+      </div>
+
+      {/* Filter */}
+      <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5">
+        {(["open", "all"] as const).map(f => (
+          <button key={f} onClick={() => setFilter(f)}
+            className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors capitalize"
+            style={filter === f ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
+            {f === "open" ? `Open (${openCount})` : `All (${allExceptions.length})`}
+          </button>
+        ))}
+      </div>
+
+      {displayed.length === 0 && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center">
+          <CheckCircle2 size={36} className="text-green-400 mx-auto mb-3" />
+          <p className="font-bold text-slate-700 text-lg">No open exceptions</p>
+          <p className="text-slate-400 text-sm mt-1">All campers are accounted for.</p>
+        </div>
+      )}
+
+      {/* Exception cards — two-column on md+ */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {displayed.map((ex, i) => {
+          const sty = SEVERITY_STYLE[ex.severity];
+          return (
+            <div key={i} className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${ex.isResolved ? "opacity-60" : sty.border}`}>
+              <div className="px-4 py-3.5">
+                <div className="flex items-start gap-2.5">
+                  <span className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${sty.dot}`} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-slate-900">{ex.camperName}</span>
+                      <span className="text-xs text-slate-500">{ex.bunk}</span>
+                      {ex.campSection && <span className="text-xs text-slate-400">{ex.campSection}</span>}
+                      {ex.isResolved
+                        ? <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">Resolved</span>
+                        : <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${sty.badge}`}>{ex.severity}</span>
+                      }
+                    </div>
+                    <p className="text-sm font-semibold text-slate-700 mt-1">{ex.message}</p>
+                    <div className="mt-2 space-y-0.5 text-xs text-slate-500">
+                      <p>Last: <span className="font-medium text-slate-700">{ex.lastCheckpoint}</span>
+                        {ex.lastCheckpointTime && <span className="ml-1 text-slate-400">{fmt(ex.lastCheckpointTime)}</span>}
+                      </p>
+                      <p>Expected: <span className="font-medium text-slate-700">{ex.expectedNextCheckpoint}</span></p>
+                    </div>
+                    {ex.isResolved && ex.resolutionNote && (
+                      <p className="mt-2 text-xs italic text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
+                        "{ex.resolutionNote}" — {ex.resolvedBy}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+              {!ex.isResolved && (
+                <div className="border-t border-slate-100">
+                  {selected?.camperId === ex.camperId && selected?.exceptionType === ex.exceptionType ? (
+                    <div className="px-4 py-3 space-y-2">
+                      <input
+                        value={noteText}
+                        onChange={e => setNoteText(e.target.value)}
+                        placeholder="Resolution note (optional)"
+                        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-slate-400"
+                      />
+                      <div className="flex gap-2">
+                        <button onClick={() => handleResolve(ex)}
+                          className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white"
+                          style={{ backgroundColor: "#023B64" }}>
+                          Mark Resolved
+                        </button>
+                        <button onClick={() => { setSelected(null); setNoteText(""); }}
+                          className="px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-500 bg-slate-100">
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button onClick={() => setSelected(ex)}
+                      className="w-full py-3 text-sm font-bold text-center active:bg-slate-50"
+                      style={{ color: "#023B64" }}>
+                      Resolve →
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -719,7 +876,9 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 function CounselorView({ staff }: { staff: StaffDoc }) {
   const bunk = staff.bunkAssignment ?? "";
   const periodAssignments = staff.periodAssignments ?? [];
-  const [view, setView] = useState<"bunk" | number>("bunk");
+  const [view, setView] = useState<"bunk" | "alerts" | number>("bunk");
+  const exceptions = useQuery(api.exceptions.getBunkExceptions, bunk ? { bunk } : "skip");
+  const openAlerts = exceptions?.filter(e => !e.isResolved).length ?? 0;
 
   // Upper Camp counselors who also run a period activity group get a top-level
   // switch between their bunk roster and their period roster(s).
@@ -740,7 +899,7 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
     </div>
   );
 
-  if (view !== "bunk") {
+  if (typeof view === "number") {
     const assignment = periodAssignments[view];
     return (
       <div className="space-y-4">
@@ -750,10 +909,70 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
     );
   }
 
+  if (view === "alerts") {
+    return (
+      <div className="space-y-4 pb-20">
+        <div className="flex items-center gap-2">
+          <button onClick={() => setView("bunk")} className="p-1 -ml-1 text-slate-400 active:text-slate-600">
+            <ChevronLeft size={20} />
+          </button>
+          <h2 className="text-xl font-bold" style={{ color: "#023B64" }}>Alerts</h2>
+        </div>
+        {(exceptions ?? []).length === 0 ? (
+          <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center">
+            <CheckCircle2 size={32} className="text-green-400 mx-auto mb-3" />
+            <p className="font-bold text-slate-700">No alerts for {bunk}</p>
+            <p className="text-slate-400 text-sm mt-1">All campers accounted for.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {(exceptions ?? []).map((ex, i) => (
+              <div key={i} className="bg-white rounded-2xl border-2 border-red-200 p-4 space-y-1">
+                <div className="flex items-center gap-2">
+                  <ShieldAlert size={16} className="text-red-500 flex-shrink-0" />
+                  <span className="font-bold text-slate-900">{ex.camperName}</span>
+                  <span className="text-xs text-slate-500">{ex.bunk}</span>
+                </div>
+                <p className="text-sm text-red-700 font-semibold pl-6">{ex.message}</p>
+                <p className="text-xs text-slate-400 pl-6">Expected: {ex.expectedNextCheckpoint}</p>
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Bottom nav */}
+        <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-20 safe-area-bottom">
+          <div className="max-w-lg mx-auto flex">
+            <button onClick={() => setView("bunk")} className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 text-slate-400">
+              <BookOpen size={22} strokeWidth={1.8} /><span className="text-[10px] font-medium">Bunk</span>
+            </button>
+            <button className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 relative" style={{ color: "#023B64" }}>
+              <ShieldAlert size={22} strokeWidth={2.5} />
+              {openAlerts > 0 && <span className="absolute top-1.5 right-[calc(50%-18px)] text-[9px] font-bold px-1 rounded-full" style={{ backgroundColor: "#DC2626", color: "#fff" }}>{openAlerts}</span>}
+              <span className="text-[10px] font-medium">Alerts</span>
+            </button>
+          </div>
+        </nav>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 pb-20">
       {tabSwitcher}
-      <CounselorBunkView staff={staff} bunk={bunk} />
+      <CounselorBunkView staff={staff} bunk={bunk} exceptions={exceptions ?? []} />
+      {/* Bottom nav */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-20 safe-area-bottom">
+        <div className="max-w-lg mx-auto flex">
+          <button className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5" style={{ color: "#023B64" }}>
+            <BookOpen size={22} strokeWidth={2.5} /><span className="text-[10px] font-medium">Bunk</span>
+          </button>
+          <button onClick={() => setView("alerts")} className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 relative text-slate-400">
+            <ShieldAlert size={22} strokeWidth={1.8} />
+            {openAlerts > 0 && <span className="absolute top-1.5 right-[calc(50%-18px)] text-[9px] font-bold px-1 rounded-full" style={{ backgroundColor: "#DC2626", color: "#fff" }}>{openAlerts}</span>}
+            <span className="text-[10px] font-medium">Alerts</span>
+          </button>
+        </div>
+      </nav>
     </div>
   );
 }
@@ -805,7 +1024,11 @@ function groupBunkRoster(items: BunkRosterItem[], groupBy: BunkGroupKey): [strin
   return order.filter(k => map.has(k)).map(k => [k, map.get(k)!]);
 }
 
-function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
+function CounselorBunkView({ staff, bunk, exceptions = [] }: {
+  staff: StaffDoc;
+  bunk: string;
+  exceptions?: AttendanceException[];
+}) {
   const roster        = useQuery(api.campers.getBunkRoster, bunk ? { bunk } : "skip");
   const setArrived    = useMutation(api.campers.confirmWithBunk);
   const setNotArrived = useMutation(api.campers.unconfirmWithBunk);
@@ -899,6 +1122,22 @@ function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
           </div>
         )}
 
+        {/* Attendance exception alerts */}
+        {exceptions.filter(e => !e.isResolved).length > 0 && (
+          <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-4 space-y-2">
+            <p className="text-red-800 font-bold text-sm flex items-center gap-2">
+              <ShieldAlert size={16} className="flex-shrink-0" />
+              {exceptions.filter(e => !e.isResolved).length} attendance alert{exceptions.filter(e => !e.isResolved).length !== 1 ? "s" : ""}
+            </p>
+            {exceptions.filter(e => !e.isResolved).map((ex, i) => (
+              <div key={i} className="bg-white rounded-xl px-3 py-2.5">
+                <p className="font-bold text-slate-900 text-sm">{ex.camperName}</p>
+                <p className="text-xs text-red-600 font-semibold mt-0.5">{ex.message}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Group by selector */}
         <div className="flex gap-1.5 overflow-x-auto pb-1">
           {BUNK_GROUP_OPTIONS.map(opt => (
@@ -924,6 +1163,7 @@ function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
             <div className="space-y-2">
               {groupItems.map(({ c, isAbsent, arrived, dismissed }) => (
                 <BunkCamperRow key={c._id} camper={c} isAbsent={isAbsent} arrived={arrived} dismissed={dismissed}
+                  exception={exceptions.find(e => e.camperId === c._id && !e.isResolved)}
                   onOpenProfile={() => setSelected(c)}
                   onToggleAM={() => toggleAM(c)}
                   onToggleOut={() => toggleOut(c)}
@@ -941,11 +1181,12 @@ function CounselorBunkView({ staff, bunk }: { staff: StaffDoc; bunk: string }) {
 }
 
 // One roster row: identity + transport/lunch/flags inline, plus In / Out tap targets.
-function BunkCamperRow({ camper, isAbsent, arrived, dismissed, onOpenProfile, onToggleAM, onToggleOut }: {
+function BunkCamperRow({ camper, isAbsent, arrived, dismissed, exception, onOpenProfile, onToggleAM, onToggleOut }: {
   camper: CamperDoc;
   isAbsent: boolean;
   arrived: boolean;
   dismissed: boolean;
+  exception?: AttendanceException;
   onOpenProfile: () => void;
   onToggleAM: () => void;
   onToggleOut: () => void;
@@ -959,7 +1200,10 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, onOpenProfile, on
 
   return (
     <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${
-      isAbsent ? "border-slate-200 opacity-60" : isCalled ? "border-amber-300" : "border-slate-200"
+      isAbsent ? "border-slate-200 opacity-60"
+      : exception && !exception.isResolved ? "border-red-300"
+      : isCalled ? "border-amber-300"
+      : "border-slate-200"
     }`}>
       {/* Info area → opens profile */}
       <button onClick={onOpenProfile} className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-slate-50">
@@ -1008,6 +1252,11 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, onOpenProfile, on
               </span>
             )}
           </div>
+          {exception && !exception.isResolved && (
+            <p className="text-xs font-semibold text-red-600 mt-1 flex items-center gap-1">
+              <ShieldAlert size={11} className="flex-shrink-0" />{exception.message}
+            </p>
+          )}
           {camper.attendanceNote && (
             <p className="text-xs italic text-slate-500 truncate mt-1">{camper.attendanceNote}</p>
           )}
@@ -1351,12 +1600,20 @@ function InOutCamperRow({
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="font-semibold text-slate-900 text-base leading-tight">{name}</span>
             {camper.hasAllergies && (
-              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
-                ALLERGY
-              </span>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700">ALLERGY</span>
             )}
           </div>
-          <p className="text-xs text-slate-400 mt-0.5">{camper.bunk}</p>
+          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+            <span className="text-xs text-slate-400">{camper.bunk}</span>
+            {camper.busRoute ? (
+              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{camper.busRoute}</span>
+            ) : camper.transportationType ? (
+              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{TRANSPORT_LABEL[camper.transportationType]}</span>
+            ) : null}
+            {camper.lunchInfo?.trim() && (
+              <span className="text-xs text-slate-500 flex items-center gap-0.5"><UtensilsCrossed size={10} />{camper.lunchInfo}</span>
+            )}
+          </div>
         </div>
       </button>
 
@@ -1747,50 +2004,115 @@ function RunnerView({ runnerName }: { runnerName: string }) {
 
   if (mine === undefined) return <Loading />;
 
+  const active    = mine.filter(c => c.status === "Assigned" || c.status === "Picked Up");
+  const completed = mine.filter(c => c.status === "Dismissed");
+
   return (
     <>
-      <div>
-        <div className="flex items-center gap-2 mb-5">
-          <User size={22} className="text-slate-700" />
+      <div className="space-y-5">
+        <div className="flex items-center gap-2">
+          <User size={20} className="text-slate-400" />
           <h2 className="text-xl font-bold text-slate-900">{runnerName}</h2>
-          <span className="ml-auto text-sm text-slate-500">{mine.length} assigned</span>
+          {active.length > 0 && (
+            <span className="ml-auto text-sm font-bold px-2.5 py-1 rounded-full"
+              style={{ backgroundColor: "#023B64", color: "#fff" }}>
+              {active.length} active
+            </span>
+          )}
         </div>
-        {mine.length === 0 && (
-          <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-400">Nothing assigned to you right now.</div>
+
+        {active.length === 0 && completed.length === 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-400">
+            <User size={36} className="mx-auto mb-3 opacity-30" />
+            <p className="font-semibold">Standing by</p>
+            <p className="text-sm mt-1">No assignments yet.</p>
+          </div>
         )}
-        <div className="space-y-3">
-          {mine.map(c => (
-            <div key={c._id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <button onClick={() => setSelected(c)} className="w-full flex items-center gap-3 px-4 py-4 text-left active:bg-slate-50">
-                <div className="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 text-white font-bold text-lg overflow-hidden"
-                  style={{ backgroundColor: avatarBg(c.name) }}>
-                  {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+
+        {/* Active assignments — large, focused cards */}
+        {active.map(c => {
+          const name = camperName(c);
+          const bg   = avatarBg(c.name);
+          const isPickedUp = c.status === "Picked Up";
+          return (
+            <div key={c._id} className="bg-white rounded-2xl border-2 border-slate-200 shadow-sm overflow-hidden">
+              {/* Identity */}
+              <button onClick={() => setSelected(c)} className="w-full flex items-center gap-4 px-5 py-4 text-left active:bg-slate-50">
+                <div className="w-14 h-14 rounded-full flex-shrink-0 flex items-center justify-center font-bold text-xl text-white overflow-hidden"
+                  style={{ backgroundColor: bg }}>
+                  {c.photoUrl
+                    ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" />
+                    : (c.preferredName ?? c.name).charAt(0).toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="font-bold text-lg text-slate-900">{c.preferredName ?? c.name}</p>
-                  <div className="flex items-center gap-3 text-sm text-slate-500 mt-0.5">
-                    <span className="flex items-center gap-1"><MapPin size={13} />{c.bunk}</span>
-                    <span className="flex items-center gap-1">{c.callSource === "Carline" ? <Car size={13} /> : <Footprints size={13} />}{c.callSource}</span>
-                  </div>
+                  <p className="font-bold text-xl text-slate-900 leading-tight">{name}</p>
+                  {c.hasAllergies && (
+                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 mr-1">ALLERGY</span>
+                  )}
+                  <p className="text-sm text-slate-500 mt-0.5">{c.bunk}</p>
                 </div>
                 <StatusBadge status={c.status} />
               </button>
-              {c.status === "Assigned" && (
+
+              {/* Direction banner */}
+              <div className="border-t border-slate-100 px-5 py-3.5 flex items-start gap-4 bg-slate-50">
+                <div className="flex-1">
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                    {isPickedUp ? "Bring to" : "Get from"}
+                  </p>
+                  <p className="font-bold text-lg text-slate-900 mt-0.5">
+                    {isPickedUp
+                      ? (c.callSource === "Carline" ? "Carline" : "Walk-Up Area")
+                      : c.bunk}
+                  </p>
+                </div>
+                {c.callSource && (
+                  <div className="flex-shrink-0 pt-4">
+                    {c.callSource === "Carline" ? <Car size={22} className="text-slate-400" /> : <Footprints size={22} className="text-slate-400" />}
+                  </div>
+                )}
+              </div>
+
+              {/* Primary action */}
+              {!isPickedUp && (
                 <button onClick={() => pickUp({ id: c._id })}
-                  className="w-full text-white py-4 font-bold text-base flex items-center justify-center gap-2"
+                  className="w-full py-4 font-bold text-base text-white flex items-center justify-center gap-2 active:opacity-80"
                   style={{ backgroundColor: "#5B8C9D" }}>
-                  <Check size={18} /> Picked Up
+                  <Check size={20} /> Picked Up from Bunk
                 </button>
               )}
-              {c.status === "Picked Up" && (
+              {isPickedUp && (
                 <button onClick={() => dismiss({ id: c._id })}
-                  className="w-full bg-green-600 active:bg-green-700 text-white py-4 font-bold text-base flex items-center justify-center gap-2">
-                  <ChevronRight size={18} /> Dismissed
+                  className="w-full py-4 font-bold text-base text-white flex items-center justify-center gap-2 active:opacity-80"
+                  style={{ backgroundColor: "#16A34A" }}>
+                  <CheckCircle2 size={20} /> Dismissed
                 </button>
               )}
             </div>
-          ))}
-        </div>
+          );
+        })}
+
+        {/* Completed — compact list */}
+        {completed.length > 0 && (
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-wider px-1 mb-2">Completed</p>
+            <div className="space-y-2">
+              {completed.map(c => (
+                <div key={c._id} className="bg-white rounded-2xl border border-slate-200 flex items-center gap-3 px-4 py-3">
+                  <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center font-bold text-sm text-white overflow-hidden"
+                    style={{ backgroundColor: avatarBg(c.name) }}>
+                    {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0).toUpperCase()}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-slate-900 text-sm">{camperName(c)}</p>
+                    <p className="text-xs text-slate-400">{c.bunk}</p>
+                  </div>
+                  <Check size={16} className="text-green-500 flex-shrink-0" />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} />}
     </>
