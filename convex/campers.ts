@@ -55,7 +55,7 @@ export const getBunks = query({
   args: {},
   handler: async (ctx) => {
     const all = await ctx.db.query("campers").collect();
-    return [...new Set(all.map((c) => c.bunk))].sort();
+    return [...new Set(all.map((c) => c.bunk).filter(Boolean))].sort() as string[];
   },
 });
 
@@ -130,6 +130,8 @@ export const create = mutation({
     afterCare: v.optional(v.boolean()),
     defaultMorningArrival: v.optional(v.string()),
     defaultAfternoonDismissal: v.optional(v.string()),
+    photoUrl: v.optional(v.string()),
+    periodGroups: v.optional(v.record(v.string(), v.string())),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("campers", {

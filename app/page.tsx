@@ -7,11 +7,10 @@ import type { Doc } from "@/convex/_generated/dataModel";
 import {
   Car, Footprints, Radio, User, Settings, Lock, Search, RotateCcw,
   Check, ChevronRight, AlertCircle, Clock, MapPin,
-  AlertTriangle, UtensilsCrossed, LogOut, ChevronDown, ChevronUp,
-  X, Hash, BookOpen, Bus, ArrowRight, StickyNote, ShieldAlert,
-  CheckCircle2, ChevronLeft,
+  AlertTriangle, LogOut, ChevronDown, ChevronUp,
+  X, Hash, BookOpen, Bus, ArrowRight, StickyNote,
+  CheckCircle2, ChevronLeft, Upload, Users,
 } from "lucide-react";
-import type { AttendanceException } from "@/convex/exceptions";
 
 // ─── Brand colors (JCC Greater Boston) ───────────────────────────────────────
 // Navy #023B64 | Steel Blue #5B8C9D | Pearl #F6F1E9 | Silver Fog #8EB2CB
@@ -73,26 +72,19 @@ const today = () => new Date().toISOString().split("T")[0];
 type StaffDoc  = Doc<"staff">;
 type CamperDoc = Doc<"campers">;
 
-// ─── Campus Presence Helpers ──────────────────────────────────────────────────
-// Two separate concerns:
-//   campusPresence  = is the camper currently at camp?  (Here / NotHere / NeedAction)
-//   locationDetail  = where specifically are they?       (In Bunk / In After Care / etc.)
-//
-// NeedAction is reserved for campers who have an arrival signal but an unresolved
-// exception gap — the system can't confirm where they are right now.
+// ─── Campus Presence Helper ───────────────────────────────────────────────────
+// Returns whether a camper is currently Here or NotHere based solely on raw
+// checkpoint state. No automatic gap/exception detection.
 
-type CampusPresence = "Here" | "NotHere" | "NeedAction";
+type CampusPresence = "Here" | "NotHere";
 
 interface CampusPresenceResult {
   status: CampusPresence;
-  label: string;   // "Here" | "Not Here" | "Need Action"
+  label: string;   // "Here" | "Not Here"
   detail: string;  // e.g. "In Bunk", "Not Arrived", "Absent"
 }
 
-function getCampusPresence(
-  c: CamperDoc,
-  exceptions: AttendanceException[] = [],
-): CampusPresenceResult {
+function getCampusPresence(c: CamperDoc): CampusPresenceResult {
   // Definitely absent
   if (c.arrivalStatus === "Absent")   return { status: "NotHere", label: "Not Here", detail: "Absent" };
   // Fully dismissed — gone for the day
@@ -108,10 +100,6 @@ function getCampusPresence(
     c.status === "Called" || c.status === "Assigned" || c.status === "Picked Up";
 
   if (!hasArrival) return { status: "NotHere", label: "Not Here", detail: "Not Arrived" };
-
-  // Has an unresolved exception — location unknown
-  const hasException = exceptions.some(e => e.camperId === c._id && !e.isResolved);
-  if (hasException) return { status: "NeedAction", label: "Need Action", detail: "Location unknown" };
 
   // Determine specific location
   if (c.dailyCheckpoints?.AfterCare && !c.dailyCheckpointsOut?.AfterCare) {
@@ -129,8 +117,6 @@ function getCampusPresence(
   if (c.dailyCheckpoints?.BeforeCare) {
     return { status: "Here", label: "Here", detail: "In Before Care" };
   }
-  // Arrived via carline/bus/director but not yet at bunk — handled as NeedAction above
-  // unless exception was resolved
   return { status: "Here", label: "Here", detail: "On Campus" };
 }
 
@@ -223,7 +209,6 @@ const ROLE_META: Record<string, { label: string; icon: React.ComponentType<{ siz
   beforecare: { label: "Before Care",  icon: Clock },
   aftercare:  { label: "After Care",   icon: Clock },
   bus:        { label: "Bus",          icon: Bus },
-  lunch:      { label: "Lunch",        icon: UtensilsCrossed },
   director:   { label: "Director",     icon: Settings },
   admin:      { label: "Admin",        icon: Settings },
   unithead:   { label: "Unit Head",    icon: BookOpen },
@@ -241,7 +226,6 @@ function renderRoleView(role: Role, staff: StaffDoc): React.ReactNode {
     case "beforecare": return <CareView staff={staff} kind="BeforeCare" />;
     case "aftercare":  return <CareView staff={staff} kind="AfterCare" />;
     case "bus":        return <BusView staff={staff} />;
-    case "lunch":      return <LunchDistributorView staff={staff} />;
     case "unithead":   return <CounselorView staff={staff} />;
     default:           return null; // admin/director handled by MultiTabShell
   }
@@ -338,27 +322,23 @@ function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => vo
   );
 }
 
-type AdminSection = "exceptions" | "transport" | "extday" | "bunk" | "lunch" | "admin" | "staff" | "upload";
+type AdminSection = "campers" | "transport" | "extday" | "bunk" | "admin" | "staff" | "upload";
 type TransportSub = "carline" | "walkup" | "dispatcher" | "runner" | "bus";
 type ExtDaySub    = "beforecare" | "aftercare";
 
 function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void }) {
-  const [section,  setSection]  = useState<AdminSection>("exceptions");
+  const [section,  setSection]  = useState<AdminSection>("campers");
   const [transSub, setTransSub] = useState<TransportSub>("carline");
   const [extSub,   setExtSub]   = useState<ExtDaySub>("beforecare");
 
-  const allExceptions = useQuery(api.exceptions.getOpenExceptions, {});
-  const openExCount = allExceptions?.filter(e => !e.isResolved).length ?? 0;
-
-  const sections: { id: AdminSection; label: string; badge?: number }[] = [
-    { id: "exceptions", label: "Exceptions",    badge: openExCount },
-    { id: "transport",  label: "Transportation" },
-    { id: "extday",     label: "Extended Day"   },
-    { id: "bunk",       label: "Bunk"           },
-    { id: "lunch",      label: "Lunch"          },
-    { id: "admin",      label: "Admin"          },
-    { id: "staff",      label: "Staff"          },
-    { id: "upload",     label: "Upload"         },
+  const sections: { id: AdminSection; label: string; icon: React.ReactNode }[] = [
+    { id: "campers",   label: "Campers",    icon: <Users size={18} /> },
+    { id: "transport", label: "Transport",  icon: <Car size={18} /> },
+    { id: "extday",    label: "Ext. Day",   icon: <Clock size={18} /> },
+    { id: "bunk",      label: "Bunk",       icon: <BookOpen size={18} /> },
+    { id: "admin",     label: "Admin",      icon: <Settings size={18} /> },
+    { id: "staff",     label: "Staff",      icon: <User size={18} /> },
+    { id: "upload",    label: "Upload",     icon: <Upload size={18} /> },
   ];
 
   const transTabs: { id: TransportSub; label: string }[] = [
@@ -386,23 +366,21 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
           </button>
         </div>
 
-        {/* Section picker — always visible in header */}
-        <div className="flex gap-1 overflow-x-auto px-3 pb-2 scrollbar-none">
-          {sections.map(s => (
-            <button key={s.id} onClick={() => setSection(s.id)}
-              className="flex-shrink-0 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap flex items-center gap-1.5"
-              style={section === s.id
-                ? { backgroundColor: "rgba(255,255,255,0.25)", color: "#fff" }
-                : { backgroundColor: "transparent", color: "rgba(255,255,255,0.55)" }}>
-              {s.label}
-              {(s.badge ?? 0) > 0 && (
-                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none"
-                  style={{ backgroundColor: "#DC2626", color: "#fff" }}>
-                  {s.badge}
-                </span>
-              )}
-            </button>
-          ))}
+        {/* Section picker — 4-column grid, no scroll */}
+        <div className="grid grid-cols-4 gap-px px-2 pb-2 pt-1">
+          {sections.map(s => {
+            const active = section === s.id;
+            return (
+              <button key={s.id} onClick={() => setSection(s.id)}
+                className="relative flex flex-col items-center gap-0.5 py-1.5 rounded-xl transition-colors"
+                style={active
+                  ? { backgroundColor: "rgba(255,255,255,0.22)", color: "#fff" }
+                  : { backgroundColor: "transparent", color: "rgba(255,255,255,0.5)" }}>
+                {s.icon}
+                <span className="text-[10px] font-semibold leading-tight">{s.label}</span>
+              </button>
+            );
+          })}
         </div>
       </header>
 
@@ -444,157 +422,350 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
           </>
         )}
 
-        {section === "exceptions" && <ExceptionsView staffName={staff.name} allExceptions={allExceptions} />}
-        {section === "bunk"       && <AdminBunkView staff={staff} />}
-        {section === "lunch"      && <LunchDistributorView staff={staff} />}
-        {section === "admin"      && <Admin />}
-        {section === "staff"      && <StaffManagement />}
-        {section === "upload"     && <CamperUpload />}
+        {section === "campers"  && <CamperDashboard staff={staff} />}
+        {section === "bunk"     && <AdminBunkView staff={staff} />}
+        {section === "admin"    && <Admin />}
+        {section === "staff"    && <StaffManagement />}
+        {section === "upload"   && <CamperUpload />}
       </main>
     </div>
   );
 }
 
-// ─── Exceptions View (admin) ──────────────────────────────────────────────────
+// ─── Camper Dashboard ─────────────────────────────────────────────────────────
 
-const SEVERITY_STYLE: Record<string, { dot: string; badge: string; border: string }> = {
-  high:   { dot: "bg-red-500",    badge: "bg-red-100 text-red-700",    border: "border-red-200"   },
-  medium: { dot: "bg-amber-400",  badge: "bg-amber-100 text-amber-700", border: "border-amber-200" },
-  low:    { dot: "bg-blue-400",   badge: "bg-blue-100 text-blue-700",   border: "border-blue-200"  },
+interface CamperRow {
+  camper:       CamperDoc;
+  campusStatus: "Here" | "NotHere";
+  arrival:      string;
+  beforeCare:   string;
+  bunk:         string;
+  afterCare:    string;
+  busRoom:      string;
+  runner:       string;
+  dismissal:    string;
+}
+
+function getCamperRow(c: CamperDoc): CamperRow {
+  const presence = getCampusPresence(c);
+
+  // Arrival
+  let arrival = "Not Arrived";
+  if (c.arrivalStatus === "Absent") {
+    arrival = "Absent";
+  } else if (c.arrivalStatus === "Arrived") {
+    const t = c.arrivalType;
+    if (t === "BeforeCare") arrival = "Before Care";
+    else if (t?.startsWith("Bus")) arrival = `Bus (${t.replace("Bus", "").trim() || ""})`.replace(" ()", "");
+    else if (t === "WalkIn") arrival = "Walk-In";
+    else if (t === "LateDropOff") arrival = "Late Drop-Off";
+    else if (t === "Director") arrival = "Director";
+    else arrival = "Carline";
+  }
+
+  // Before Care
+  let beforeCare = "Not Expected";
+  const bcIn  = !!c.dailyCheckpoints?.BeforeCare;
+  const bcOut = !!c.dailyCheckpointsOut?.BeforeCare;
+  if (c.beforeCare || bcIn) {
+    if (bcOut)      beforeCare = "Out to Bunk";
+    else if (bcIn)  beforeCare = "In Before Care";
+    else            beforeCare = "Expected";
+  }
+
+  // Bunk
+  let bunk = "Not In";
+  if (c.arrivalStatus === "Absent") {
+    bunk = "—";
+  } else if (c.bunkConfirmed) {
+    if (c.status === "Dismissed") {
+      bunk = "Out to Dismissal";
+    } else if (c.leftEarly) {
+      if (c.dailyCheckpoints?.AfterCare) bunk = "Out to After Care";
+      else if (c.dailyCheckpoints?.Bus || c.dailyCheckpointsOut?.Bus) bunk = "Out to Bus Room";
+      else bunk = "Left Early";
+    } else {
+      bunk = "In Bunk";
+    }
+  } else if (bcOut) {
+    bunk = "Expected (from BC)";
+  }
+
+  // After Care
+  let afterCare = "Not Expected";
+  const isACExpected = c.afterCare || c.transportationType === "AfterCare" || c.dailyDismissalOverride === "AfterCare";
+  const acIn  = !!c.dailyCheckpoints?.AfterCare;
+  const acOut = !!c.dailyCheckpointsOut?.AfterCare;
+  if (isACExpected || acIn) {
+    if (acOut)      afterCare = "Picked Up";
+    else if (acIn)  afterCare = "In After Care";
+    else            afterCare = "Expected";
+  }
+
+  // Bus Room
+  let busRoom = "Not Expected";
+  const isBusExpected = c.transportationType === "Bus" || c.dailyDismissalOverride === "Bus" || !!c.busRoute;
+  const busIn  = !!c.dailyCheckpoints?.Bus;
+  const busOut = !!c.dailyCheckpointsOut?.Bus;
+  if (isBusExpected || busIn || busOut) {
+    if (busOut)     busRoom = "Boarded Bus";
+    else if (busIn) busRoom = "In Bus Room";
+    else            busRoom = "Expected";
+  }
+
+  // Runner
+  let runner = "—";
+  if (c.runner) {
+    if (c.status === "Assigned")     runner = `Assigned · ${c.runner}`;
+    else if (c.status === "Picked Up") runner = `With ${c.runner}`;
+    else runner = c.runner;
+  }
+
+  // Dismissal
+  let dismissal = "Not Called";
+  if (c.arrivalStatus === "Absent") {
+    dismissal = "—";
+  } else if (c.status === "Dismissed") {
+    dismissal = "Dismissed";
+  } else if (c.leftEarly && !acIn && !busIn && !busOut) {
+    dismissal = "Left for Day";
+  } else if (c.status === "Picked Up") {
+    dismissal = "With Runner";
+  } else if (c.status === "Assigned") {
+    dismissal = "Assigned";
+  } else if (c.status === "Called") {
+    dismissal = "Called";
+  }
+
+  return { camper: c, campusStatus: presence.status, arrival, beforeCare, bunk, afterCare, busRoom, runner, dismissal };
+}
+
+const DASHBOARD_STATUS_CHIP: Record<"Here" | "NotHere", { label: string; style: string }> = {
+  Here:    { label: "Here",     style: "bg-green-100 text-green-700" },
+  NotHere: { label: "Not Here", style: "bg-slate-100 text-slate-500" },
 };
 
-function ExceptionsView({ staffName, allExceptions }: {
-  staffName: string;
-  allExceptions?: AttendanceException[];
-}) {
-  const resolveException = useMutation(api.exceptions.resolveException);
-  const [selected, setSelected] = useState<AttendanceException | null>(null);
-  const [noteText, setNoteText] = useState("");
-  const [filter,   setFilter]   = useState<"open" | "all">("open");
+function dotColor(val: string): string {
+  if (val === "—" || val === "Not Expected" || val === "Not Called" || val === "Not Arrived" || val === "Not In") return "bg-slate-200";
+  if (val === "Absent") return "bg-slate-300";
+  if (val === "Expected" || val === "Expected (from BC)") return "bg-blue-200";
+  return "bg-green-400";
+}
 
-  if (allExceptions === undefined) return <Loading />;
+function CamperDashboardRow({ row, onClick }: { row: CamperRow; onClick: () => void }) {
+  const { camper } = row;
+  const chip     = DASHBOARD_STATUS_CHIP[row.campusStatus];
+  const bg       = avatarBg(camper.name);
+  const initial  = (camper.preferredName ?? camper.name).charAt(0).toUpperCase();
+  const displayName = camper.preferredName
+    ? `${camper.preferredName}${camper.lastName ? " " + camper.lastName : ""}`
+    : camper.name;
 
-  const displayed = filter === "open"
-    ? allExceptions.filter(e => !e.isResolved)
-    : allExceptions;
+  const dots: { label: string; value: string; show: boolean }[] = [
+    { label: "BC",   value: row.beforeCare, show: row.beforeCare !== "Not Expected" },
+    { label: "Bunk", value: row.bunk,        show: true },
+    { label: "AC",   value: row.afterCare,   show: row.afterCare !== "Not Expected" },
+    { label: "Bus",  value: row.busRoom,     show: row.busRoom !== "Not Expected" },
+    { label: "Out",  value: row.dismissal,   show: true },
+  ].filter(d => d.show);
 
-  const openCount     = allExceptions.filter(e => !e.isResolved).length;
-  const resolvedCount = allExceptions.filter(e => e.isResolved).length;
-  const highCount     = allExceptions.filter(e => !e.isResolved && e.severity === "high").length;
+  return (
+    <button onClick={onClick}
+      className="w-full text-left bg-white border border-slate-200 rounded-2xl px-3 py-3 flex gap-3 items-start active:opacity-75 transition-opacity">
+      {/* Avatar */}
+      <div className="w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center overflow-hidden"
+        style={{ backgroundColor: bg }}>
+        {camper.photoUrl
+          ? <img src={camper.photoUrl} className="w-full h-full object-cover" alt="" />
+          : <span className="text-white font-black text-sm leading-none">{initial}</span>}
+      </div>
 
-  const handleResolve = async (ex: AttendanceException) => {
-    await resolveException({
-      camperId:       ex.camperId as Parameters<typeof resolveException>[0]["camperId"],
-      exceptionType:  ex.exceptionType,
-      resolvedBy:     staffName,
-      resolutionNote: noteText.trim() || undefined,
-    });
-    setNoteText("");
-    setSelected(null);
-  };
+      {/* Content */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="font-semibold text-slate-800 text-sm truncate">{displayName}</span>
+          {camper.hasAllergies && <AlertTriangle size={11} className="text-red-500 flex-shrink-0" />}
+          {camper.hasNotes     && <StickyNote    size={11} className="text-blue-400 flex-shrink-0" />}
+        </div>
+        <p className="text-xs text-slate-500 mt-0.5">
+          {camper.bunk}{camper.unit ? ` · ${camper.unit}` : ""} · {row.arrival}
+        </p>
+        <div className="flex gap-2.5 mt-1.5 flex-wrap">
+          {dots.map((d, i) => (
+            <div key={d.label || i} className="flex items-center gap-1">
+              <div className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor(d.value)}`} />
+              <span className="text-[10px] text-slate-500 font-medium leading-none">{d.label}: {d.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Status chip */}
+      <span className={`text-[10px] font-bold px-2 py-1 rounded-full flex-shrink-0 mt-0.5 ${chip.style}`}>
+        {chip.label}
+      </span>
+    </button>
+  );
+}
+
+function CamperDashboard({ staff }: { staff: StaffDoc }) {
+  const campers = useQuery(api.campers.list);
+
+  const [search,          setSearch]          = useState("");
+  const [statusFilter,    setStatusFilter]    = useState<"all" | "Here" | "NotHere">("all");
+  const [showFilters,     setShowFilters]     = useState(false);
+  const [bunkFilter,      setBunkFilter]      = useState("");
+  const [unitFilter,      setUnitFilter]      = useState("");
+  const [transportFilter, setTransportFilter] = useState("");
+  const [selectedCamper,  setSelectedCamper]  = useState<CamperDoc | null>(null);
+
+  if (campers === undefined) return <Loading />;
+
+  const rows = campers.map(c => getCamperRow(c));
+
+  const hereCount       = rows.filter(r => r.campusStatus === "Here").length;
+  const notHereCount    = rows.filter(r => r.campusStatus === "NotHere").length;
+  const absentCount     = campers.filter(c => c.arrivalStatus === "Absent").length;
+  const notArrivedCount = campers.filter(c => !c.arrivalStatus || c.arrivalStatus === "NotArrived").length;
+  const dismissedCount  = rows.filter(r => r.dismissal === "Dismissed" || r.dismissal === "Left for Day").length;
+
+  const q = search.toLowerCase().trim();
+  const filtered = rows.filter(r => {
+    if (statusFilter !== "all" && r.campusStatus !== statusFilter) return false;
+    if (bunkFilter      && r.camper.bunk !== bunkFilter) return false;
+    if (unitFilter      && r.camper.unit !== unitFilter) return false;
+    if (transportFilter && (r.camper.transportationType ?? "") !== transportFilter) return false;
+    if (q) {
+      const name = `${r.camper.preferredName ?? r.camper.name} ${r.camper.lastName ?? ""}`.toLowerCase();
+      if (!name.includes(q) && !String(r.camper.code).includes(q)) return false;
+    }
+    return true;
+  });
+
+  const bunks = [...new Set(campers.map(c => c.bunk).filter(Boolean))].sort() as string[];
+  const units = [...new Set(campers.map(c => c.unit).filter(Boolean))].sort() as string[];
+
+  const toggleStatus = (s: "Here" | "NotHere") =>
+    setStatusFilter(prev => prev === s ? "all" : s);
 
   return (
     <div className="space-y-4">
-      {/* Header + summary */}
-      <div className="flex items-center gap-3">
-        <ShieldAlert size={22} className={highCount > 0 ? "text-red-500" : "text-slate-400"} />
-        <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>Exceptions</h2>
+      {/* Summary card */}
+      <div className="bg-white border border-slate-200 rounded-2xl px-4 py-4">
+        <div className="flex gap-2">
+          {(["Here", "NotHere"] as const).map(s => {
+            const counts = { Here: hereCount, NotHere: notHereCount };
+            const styles = {
+              Here:    { num: "text-green-700", label: "text-green-600", active: "bg-green-50" },
+              NotHere: { num: "text-slate-600",  label: "text-slate-500", active: "bg-slate-100" },
+            };
+            const st = styles[s];
+            return (
+              <button key={s} onClick={() => toggleStatus(s)}
+                className={`flex-1 text-center rounded-xl py-2.5 transition-colors ${statusFilter === s ? st.active : ""}`}>
+                <p className={`text-2xl font-black ${st.num}`}>{counts[s]}</p>
+                <p className={`text-xs font-semibold mt-0.5 ${st.label}`}>
+                  {s === "Here" ? "Here" : "Not Here"}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-xs text-slate-400 text-center mt-2 pt-2 border-t border-slate-100">
+          {campers.length} enrolled
+          {notArrivedCount > 0  ? ` · ${notArrivedCount} not arrived` : ""}
+          {absentCount > 0      ? ` · ${absentCount} absent` : ""}
+          {dismissedCount > 0   ? ` · ${dismissedCount} dismissed` : ""}
+        </p>
       </div>
 
-      <div className="flex gap-2">
-        <Pill value={openCount}     label="Open"     color={openCount > 0 ? "amber" : "slate"} />
-        <Pill value={highCount}     label="High"     color={highCount > 0 ? "amber" : "slate"} />
-        <Pill value={resolvedCount} label="Resolved" color="green" />
-      </div>
-
-      {/* Filter */}
-      <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5">
-        {(["open", "all"] as const).map(f => (
-          <button key={f} onClick={() => setFilter(f)}
-            className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors capitalize"
-            style={filter === f ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
-            {f === "open" ? `Open (${openCount})` : `All (${allExceptions.length})`}
+      {/* Search + Filters */}
+      <div className="space-y-2">
+        <div className="flex gap-2">
+          <div className="flex-1 relative">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Search by name or code…"
+              className="w-full pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#5B8C9D]" />
+          </div>
+          <button onClick={() => setShowFilters(f => !f)}
+            className={`px-3.5 py-2.5 rounded-xl text-sm font-semibold border transition-colors ${showFilters ? "border-[#023B64] text-[#023B64] bg-white" : "bg-white border-slate-200 text-slate-600"}`}>
+            {(bunkFilter || unitFilter || transportFilter) ? "Filters ●" : "Filters"}
           </button>
-        ))}
+        </div>
+
+        {showFilters && (
+          <div className="bg-white border border-slate-200 rounded-2xl p-3 space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <p className="text-[11px] text-slate-500 font-medium mb-1">Bunk</p>
+                <select value={bunkFilter} onChange={e => setBunkFilter(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-xl px-2.5 py-2 bg-white focus:outline-none">
+                  <option value="">All Bunks</option>
+                  {bunks.map((b, i) => <option key={b || i} value={b}>{b}</option>)}
+                </select>
+              </div>
+              <div>
+                <p className="text-[11px] text-slate-500 font-medium mb-1">Unit</p>
+                <select value={unitFilter} onChange={e => setUnitFilter(e.target.value)}
+                  className="w-full text-sm border border-slate-200 rounded-xl px-2.5 py-2 bg-white focus:outline-none">
+                  <option value="">All Units</option>
+                  {units.map((u, i) => <option key={u || i} value={u}>{u}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <p className="text-[11px] text-slate-500 font-medium mb-1">Transportation</p>
+              <select value={transportFilter} onChange={e => setTransportFilter(e.target.value)}
+                className="w-full text-sm border border-slate-200 rounded-xl px-2.5 py-2 bg-white focus:outline-none">
+                <option value="">All</option>
+                <option value="Carline">Carline</option>
+                <option value="Bus">Bus</option>
+                <option value="AfterCare">After Care</option>
+                <option value="WalkUp">Walk-Up</option>
+              </select>
+            </div>
+            {(bunkFilter || unitFilter || transportFilter) && (
+              <button onClick={() => { setBunkFilter(""); setUnitFilter(""); setTransportFilter(""); }}
+                className="text-xs text-slate-400 underline">Clear filters</button>
+            )}
+          </div>
+        )}
       </div>
 
-      {displayed.length === 0 && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center">
-          <CheckCircle2 size={36} className="text-green-400 mx-auto mb-3" />
-          <p className="font-bold text-slate-700 text-lg">No open exceptions</p>
-          <p className="text-slate-400 text-sm mt-1">All campers are accounted for.</p>
+      {statusFilter !== "all" && (
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${DASHBOARD_STATUS_CHIP[statusFilter].style}`}>
+            {DASHBOARD_STATUS_CHIP[statusFilter].label}
+          </span>
+          <button onClick={() => setStatusFilter("all")} className="text-xs text-slate-400 underline ml-auto">
+            Show all
+          </button>
         </div>
       )}
 
-      {/* Exception cards — two-column on md+ */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {displayed.map((ex, i) => {
-          const sty = SEVERITY_STYLE[ex.severity];
-          return (
-            <div key={i} className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${ex.isResolved ? "opacity-60" : sty.border}`}>
-              <div className="px-4 py-3.5">
-                <div className="flex items-start gap-2.5">
-                  <span className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 ${sty.dot}`} />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-bold text-slate-900">{ex.camperName}</span>
-                      <span className="text-xs text-slate-500">{ex.bunk}</span>
-                      {ex.campSection && <span className="text-xs text-slate-400">{ex.campSection}</span>}
-                      {ex.isResolved
-                        ? <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">Resolved</span>
-                        : <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${sty.badge}`}>{ex.severity}</span>
-                      }
-                    </div>
-                    <p className="text-sm font-semibold text-slate-700 mt-1">{ex.message}</p>
-                    <div className="mt-2 space-y-0.5 text-xs text-slate-500">
-                      <p>Last: <span className="font-medium text-slate-700">{ex.lastCheckpoint}</span>
-                        {ex.lastCheckpointTime && <span className="ml-1 text-slate-400">{fmt(ex.lastCheckpointTime)}</span>}
-                      </p>
-                      <p>Expected: <span className="font-medium text-slate-700">{ex.expectedNextCheckpoint}</span></p>
-                    </div>
-                    {ex.isResolved && ex.resolutionNote && (
-                      <p className="mt-2 text-xs italic text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
-                        "{ex.resolutionNote}" — {ex.resolvedBy}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-              {!ex.isResolved && (
-                <div className="border-t border-slate-100">
-                  {selected?.camperId === ex.camperId && selected?.exceptionType === ex.exceptionType ? (
-                    <div className="px-4 py-3 space-y-2">
-                      <input
-                        value={noteText}
-                        onChange={e => setNoteText(e.target.value)}
-                        placeholder="Resolution note (optional)"
-                        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-slate-400"
-                      />
-                      <div className="flex gap-2">
-                        <button onClick={() => handleResolve(ex)}
-                          className="flex-1 py-2.5 rounded-xl text-sm font-bold text-white"
-                          style={{ backgroundColor: "#023B64" }}>
-                          Mark Resolved
-                        </button>
-                        <button onClick={() => { setSelected(null); setNoteText(""); }}
-                          className="px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-500 bg-slate-100">
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button onClick={() => setSelected(ex)}
-                      className="w-full py-3 text-sm font-bold text-center active:bg-slate-50"
-                      style={{ color: "#023B64" }}>
-                      Resolve →
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
+      <p className="text-xs text-slate-400">{filtered.length} of {campers.length} campers</p>
+
+      {/* List */}
+      <div className="space-y-2">
+        {filtered.length === 0 && (
+          <div className="bg-white border border-slate-200 rounded-2xl px-4 py-10 text-center text-slate-400 text-sm">
+            No campers match your filters.
+          </div>
+        )}
+        {filtered.map(row => (
+          <CamperDashboardRow key={row.camper._id} row={row} onClick={() => setSelectedCamper(row.camper)} />
+        ))}
       </div>
+
+      {selectedCamper && (
+        <CamperDetailSheet
+          camper={selectedCamper}
+          onClose={() => setSelectedCamper(null)}
+          staffName={staff.name}
+          isAdmin
+        />
+      )}
     </div>
   );
 }
@@ -612,8 +783,8 @@ function AdminBunkView({ staff }: { staff: StaffDoc }) {
       <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>Bunk Roster</h2>
       {bunks.length > 0 && (
         <div className="flex gap-1.5 overflow-x-auto pb-1">
-          {bunks.map(b => (
-            <button key={b} onClick={() => setBunk(b)}
+          {bunks.map((b, i) => (
+            <button key={b || i} onClick={() => setBunk(b)}
               className="px-3.5 py-2 rounded-xl text-sm font-semibold transition-colors flex-shrink-0"
               style={selectedBunk === b
                 ? { backgroundColor: "#023B64", color: "#fff" }
@@ -763,17 +934,6 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName, isAdm
               <InfoTile icon={<Hash size={16} />} label="Pickup Code" value={`#${camper.code}`} mono />
             )}
           </div>
-
-          {/* Lunch */}
-          {camper.lunchInfo && (
-            <div className="flex items-center gap-3 bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3.5">
-              <UtensilsCrossed size={18} className="text-slate-500 flex-shrink-0" />
-              <div>
-                <p className="text-xs text-slate-400 font-medium">Lunch</p>
-                <p className="font-semibold text-slate-800 text-sm mt-0.5">{camper.lunchInfo}</p>
-              </div>
-            </div>
-          )}
 
           {/* Today's checkpoints */}
           <div>
@@ -950,12 +1110,8 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 function CounselorView({ staff }: { staff: StaffDoc }) {
   const bunk = staff.bunkAssignment ?? "";
   const periodAssignments = staff.periodAssignments ?? [];
-  const [view, setView] = useState<"bunk" | "alerts" | number>("bunk");
-  const exceptions = useQuery(api.exceptions.getBunkExceptions, bunk ? { bunk } : "skip");
-  const openAlerts = exceptions?.filter(e => !e.isResolved).length ?? 0;
+  const [view, setView] = useState<"bunk" | number>("bunk");
 
-  // Upper Camp counselors who also run a period activity group get a top-level
-  // switch between their bunk roster and their period roster(s).
   const tabSwitcher = periodAssignments.length > 0 && (
     <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5 mb-4">
       <button onClick={() => setView("bunk")}
@@ -983,85 +1139,23 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
     );
   }
 
-  if (view === "alerts") {
-    return (
-      <div className="space-y-4 pb-20">
-        <div className="flex items-center gap-2">
-          <button onClick={() => setView("bunk")} className="p-1 -ml-1 text-slate-400 active:text-slate-600">
-            <ChevronLeft size={20} />
-          </button>
-          <h2 className="text-xl font-bold" style={{ color: "#023B64" }}>Alerts</h2>
-        </div>
-        {(exceptions ?? []).length === 0 ? (
-          <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center">
-            <CheckCircle2 size={32} className="text-green-400 mx-auto mb-3" />
-            <p className="font-bold text-slate-700">No alerts for {bunk}</p>
-            <p className="text-slate-400 text-sm mt-1">All campers accounted for.</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {(exceptions ?? []).map((ex, i) => (
-              <div key={i} className="bg-white rounded-2xl border-2 border-red-200 p-4 space-y-1">
-                <div className="flex items-center gap-2">
-                  <ShieldAlert size={16} className="text-red-500 flex-shrink-0" />
-                  <span className="font-bold text-slate-900">{ex.camperName}</span>
-                  <span className="text-xs text-slate-500">{ex.bunk}</span>
-                </div>
-                <p className="text-sm text-red-700 font-semibold pl-6">{ex.message}</p>
-                <p className="text-xs text-slate-400 pl-6">Expected: {ex.expectedNextCheckpoint}</p>
-              </div>
-            ))}
-          </div>
-        )}
-        {/* Bottom nav */}
-        <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-20 safe-area-bottom">
-          <div className="max-w-lg mx-auto flex">
-            <button onClick={() => setView("bunk")} className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 text-slate-400">
-              <BookOpen size={22} strokeWidth={1.8} /><span className="text-[10px] font-medium">Bunk</span>
-            </button>
-            <button className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 relative" style={{ color: "#023B64" }}>
-              <ShieldAlert size={22} strokeWidth={2.5} />
-              {openAlerts > 0 && <span className="absolute top-1.5 right-[calc(50%-18px)] text-[9px] font-bold px-1 rounded-full" style={{ backgroundColor: "#DC2626", color: "#fff" }}>{openAlerts}</span>}
-              <span className="text-[10px] font-medium">Alerts</span>
-            </button>
-          </div>
-        </nav>
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-4 pb-20">
+    <div className="space-y-4">
       {tabSwitcher}
-      <CounselorBunkView staff={staff} bunk={bunk} exceptions={exceptions ?? []} />
-      {/* Bottom nav */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-20 safe-area-bottom">
-        <div className="max-w-lg mx-auto flex">
-          <button className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5" style={{ color: "#023B64" }}>
-            <BookOpen size={22} strokeWidth={2.5} /><span className="text-[10px] font-medium">Bunk</span>
-          </button>
-          <button onClick={() => setView("alerts")} className="flex-1 flex flex-col items-center justify-center py-2.5 gap-0.5 relative text-slate-400">
-            <ShieldAlert size={22} strokeWidth={1.8} />
-            {openAlerts > 0 && <span className="absolute top-1.5 right-[calc(50%-18px)] text-[9px] font-bold px-1 rounded-full" style={{ backgroundColor: "#DC2626", color: "#fff" }}>{openAlerts}</span>}
-            <span className="text-[10px] font-medium">Alerts</span>
-          </button>
-        </div>
-      </nav>
+      <CounselorBunkView staff={staff} bunk={bunk} />
     </div>
   );
 }
 
-type BunkGroupKey = "none" | "status" | "lunch" | "transport";
+type BunkGroupKey = "none" | "status" | "transport";
 
 const BUNK_GROUP_OPTIONS: { key: BunkGroupKey; label: string }[] = [
-  { key: "none",       label: "All" },
-  { key: "status",     label: "In / Out" },
-  { key: "lunch",      label: "Lunch" },
-  { key: "transport",  label: "Transport" },
+  { key: "none",      label: "All" },
+  { key: "status",    label: "In / Out" },
+  { key: "transport", label: "Transport" },
 ];
 
 const STATUS_GROUP_ORDER = ["In", "Out", "Not Yet In", "Absent"];
-const LUNCH_GROUP_ORDER = ["Buys Lunch", "Brings Lunch"];
 
 type BunkRosterItem = { c: CamperDoc; isAbsent: boolean; arrived: boolean; dismissed: boolean };
 
@@ -1073,8 +1167,6 @@ function bunkGroupKey(item: BunkRosterItem, groupBy: BunkGroupKey): string {
       if (dismissed) return "Out";
       if (arrived) return "In";
       return "Not Yet In";
-    case "lunch":
-      return c.lunchInfo?.trim() ? "Brings Lunch" : "Buys Lunch";
     case "transport":
       if (c.busRoute) return `Bus · ${c.busRoute}`;
       if (c.transportationType) return TRANSPORT_LABEL[c.transportationType] ?? "Other";
@@ -1091,17 +1183,15 @@ function groupBunkRoster(items: BunkRosterItem[], groupBy: BunkGroupKey): [strin
     const key = bunkGroupKey(item, groupBy);
     map.set(key, [...(map.get(key) ?? []), item]);
   }
-  let order: string[];
-  if (groupBy === "status") order = STATUS_GROUP_ORDER;
-  else if (groupBy === "lunch") order = LUNCH_GROUP_ORDER;
-  else order = [...map.keys()].sort((a, b) => a === "Other" ? 1 : b === "Other" ? -1 : a.localeCompare(b));
+  const order: string[] = groupBy === "status"
+    ? STATUS_GROUP_ORDER
+    : [...map.keys()].sort((a, b) => a === "Other" ? 1 : b === "Other" ? -1 : a.localeCompare(b));
   return order.filter(k => map.has(k)).map(k => [k, map.get(k)!]);
 }
 
-function CounselorBunkView({ staff, bunk, exceptions = [] }: {
+function CounselorBunkView({ staff, bunk }: {
   staff: StaffDoc;
   bunk: string;
-  exceptions?: AttendanceException[];
 }) {
   const roster        = useQuery(api.campers.getBunkRoster, bunk ? { bunk } : "skip");
   const setArrived    = useMutation(api.campers.confirmWithBunk);
@@ -1133,9 +1223,8 @@ function CounselorBunkView({ staff, bunk, exceptions = [] }: {
 
   const absentCount     = items.filter(i => i.isAbsent).length;
   const leftForDayCount = items.filter(i => i.dismissed && !i.isAbsent).length;
-  const hereCount       = items.filter(i => getCampusPresence(i.c, exceptions).status === "Here").length;
-  const notHereCount    = items.filter(i => getCampusPresence(i.c, exceptions).status === "NotHere").length;
-  const needActionCount = items.filter(i => getCampusPresence(i.c, exceptions).status === "NeedAction").length;
+  const hereCount       = items.filter(i => getCampusPresence(i.c).status === "Here").length;
+  const notHereCount    = items.filter(i => getCampusPresence(i.c).status === "NotHere").length;
   const called          = roster.filter(c => c.status === "Called" || c.status === "Assigned");
 
   const toggleAM = (c: CamperDoc) => {
@@ -1167,9 +1256,8 @@ function CounselorBunkView({ staff, bunk, exceptions = [] }: {
 
         {/* Summary strip */}
         <div className="flex gap-2">
-          <Pill value={hereCount}       label="Here"        color="green" />
-          <Pill value={notHereCount}    label="Not Here"    color="slate" />
-          {needActionCount > 0 && <Pill value={needActionCount} label="Need Action" color="amber" />}
+          <Pill value={hereCount}    label="Here"     color="green" />
+          <Pill value={notHereCount} label="Not Here" color="slate" />
         </div>
         <p className="text-xs text-slate-500 text-center -mt-1">
           {items.length} enrolled
@@ -1199,22 +1287,6 @@ function CounselorBunkView({ staff, bunk, exceptions = [] }: {
           </div>
         )}
 
-        {/* Attendance exception alerts */}
-        {exceptions.filter(e => !e.isResolved).length > 0 && (
-          <div className="bg-red-50 border-2 border-red-300 rounded-2xl p-4 space-y-2">
-            <p className="text-red-800 font-bold text-sm flex items-center gap-2">
-              <ShieldAlert size={16} className="flex-shrink-0" />
-              {exceptions.filter(e => !e.isResolved).length} attendance alert{exceptions.filter(e => !e.isResolved).length !== 1 ? "s" : ""}
-            </p>
-            {exceptions.filter(e => !e.isResolved).map((ex, i) => (
-              <div key={i} className="bg-white rounded-xl px-3 py-2.5">
-                <p className="font-bold text-slate-900 text-sm">{ex.camperName}</p>
-                <p className="text-xs text-red-600 font-semibold mt-0.5">{ex.message}</p>
-              </div>
-            ))}
-          </div>
-        )}
-
         {/* Group by selector */}
         <div className="flex gap-1.5 overflow-x-auto pb-1">
           {BUNK_GROUP_OPTIONS.map(opt => (
@@ -1229,8 +1301,8 @@ function CounselorBunkView({ staff, bunk, exceptions = [] }: {
         </div>
 
         {/* Roster — one screen, two tap targets per camper */}
-        {groups.map(([label, groupItems]) => (
-          <div key={label || "all"}>
+        {groups.map(([label, groupItems], gi) => (
+          <div key={label || `group-${gi}`}>
             {label && (
               <div className="flex items-center gap-2 mb-2 px-1">
                 <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">{label}</span>
@@ -1240,7 +1312,6 @@ function CounselorBunkView({ staff, bunk, exceptions = [] }: {
             <div className="space-y-2">
               {groupItems.map(({ c, isAbsent, arrived, dismissed }) => (
                 <BunkCamperRow key={c._id} camper={c} isAbsent={isAbsent} arrived={arrived} dismissed={dismissed}
-                  exception={exceptions.find(e => e.camperId === c._id && !e.isResolved)}
                   onOpenProfile={() => setSelected(c)}
                   onToggleAM={() => toggleAM(c)}
                   onToggleOut={() => toggleOut(c)}
@@ -1257,13 +1328,12 @@ function CounselorBunkView({ staff, bunk, exceptions = [] }: {
   );
 }
 
-// One roster row: identity + transport/lunch/flags inline, plus In / Out tap targets.
-function BunkCamperRow({ camper, isAbsent, arrived, dismissed, exception, onOpenProfile, onToggleAM, onToggleOut }: {
+// One roster row: identity + transport/flags inline, plus In / Out tap targets.
+function BunkCamperRow({ camper, isAbsent, arrived, dismissed, onOpenProfile, onToggleAM, onToggleOut }: {
   camper: CamperDoc;
   isAbsent: boolean;
   arrived: boolean;
   dismissed: boolean;
-  exception?: AttendanceException;
   onOpenProfile: () => void;
   onToggleAM: () => void;
   onToggleOut: () => void;
@@ -1271,21 +1341,16 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, exception, onOpen
   const name = camperName(camper);
   const bg = avatarBg(camper.name);
   const isCalled  = camper.status === "Called" || camper.status === "Assigned";
-  const presence  = getCampusPresence(camper, exception ? [{ ...exception, camperId: camper._id }] : []);
+  const presence  = getCampusPresence(camper);
 
   const PRESENCE_STYLE: Record<CampusPresence, string> = {
-    Here:       "text-green-700",
-    NotHere:    "text-slate-500",
-    NeedAction: "text-amber-700",
+    Here:    "text-green-700",
+    NotHere: "text-slate-500",
   };
-
-  const buysLunch = !camper.lunchInfo?.trim();
-  const lunchPickedUp = !!camper.dailyCheckpoints?.Lunch;
 
   return (
     <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${
       isAbsent ? "border-slate-200 opacity-60"
-      : exception && !exception.isResolved ? "border-red-300"
       : isCalled ? "border-amber-300"
       : "border-slate-200"
     }`}>
@@ -1315,15 +1380,6 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, exception, onOpen
                 {TRANSPORT_LABEL[camper.transportationType]}
               </span>
             )}
-            {buysLunch ? (
-              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 flex items-center gap-0.5">
-                <UtensilsCrossed size={10} />{lunchPickedUp ? "Lunch ✓" : "Lunch"}
-              </span>
-            ) : (
-              <span className="text-xs text-slate-500 flex items-center gap-0.5">
-                <UtensilsCrossed size={10} />{camper.lunchInfo}
-              </span>
-            )}
             <span className={`text-xs font-semibold ${PRESENCE_STYLE[presence.status]}`}>
               {presence.label} · {presence.detail}
             </span>
@@ -1338,11 +1394,6 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, exception, onOpen
               </span>
             )}
           </div>
-          {exception && !exception.isResolved && (
-            <p className="text-xs font-semibold text-red-600 mt-1 flex items-center gap-1">
-              <ShieldAlert size={11} className="flex-shrink-0" />{exception.message}
-            </p>
-          )}
           {camper.attendanceNote && (
             <p className="text-xs italic text-slate-500 truncate mt-1">{camper.attendanceNote}</p>
           )}
@@ -1442,9 +1493,9 @@ function FlagEditor({ camper, staffName }: { camper: CamperDoc; staffName: strin
   );
 }
 
-// ─── Generic Checkpoint Roster (Before/After Care, Bus sheets, Lunch check) ──
+// ─── Generic Checkpoint Roster (Before/After Care, Bus sheets) ───────────────
 
-type CheckpointKey = "BeforeCare" | "AfterCare" | "Lunch" | "Bus";
+type CheckpointKey = "BeforeCare" | "AfterCare" | "Bus";
 
 function CheckpointRosterView({
   campers, checkpoint, staffName, actionLabel, doneLabel, groupLabel, emptyMessage,
@@ -1572,7 +1623,6 @@ function RosterCheckCard({
             <span className="font-semibold text-slate-900 text-base leading-tight">{name}</span>
             {camper.hasAllergies && <AlertTriangle size={13} className="text-orange-500 flex-shrink-0" />}
             {camper.hasNotes     && <AlertCircle   size={13} className="text-blue-400  flex-shrink-0" />}
-            {camper.lunchInfo    && <UtensilsCrossed size={13} className="text-slate-400 flex-shrink-0" />}
           </div>
         </div>
         <ArrowRight size={16} className="text-slate-300 flex-shrink-0" />
@@ -1696,9 +1746,6 @@ function InOutCamperRow({
             ) : camper.transportationType ? (
               <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{TRANSPORT_LABEL[camper.transportationType]}</span>
             ) : null}
-            {camper.lunchInfo?.trim() && (
-              <span className="text-xs text-slate-500 flex items-center gap-0.5"><UtensilsCrossed size={10} />{camper.lunchInfo}</span>
-            )}
           </div>
         </div>
       </button>
@@ -1779,50 +1826,6 @@ function BusView({ staff }: { staff: StaffDoc }) {
           emptyMessage={`No campers assigned to ${route}.`}
         />
       )}
-    </div>
-  );
-}
-
-// ─── Lunch Distributor ────────────────────────────────────────────────────────
-
-function LunchDistributorView({ staff }: { staff: StaffDoc }) {
-  const buyers = useQuery(api.campers.getLunchBuyers, {});
-  const [bunkFilter, setBunkFilter] = useState<string>("All");
-
-  if (buyers === undefined) return <Loading />;
-
-  const bunks = ["All", ...Array.from(new Set(buyers.map(c => c.bunk))).sort()];
-  const filtered = bunkFilter === "All" ? buyers : buyers.filter(c => c.bunk === bunkFilter);
-
-  return (
-    <div className="space-y-4">
-      <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>Lunch Distribution</h2>
-      <p className="text-sm text-slate-500 -mt-2">
-        Track who has picked up their bought lunch. Counselors can see this status but cannot change it.
-      </p>
-
-      {/* Bunk filter */}
-      <div className="flex gap-1.5 overflow-x-auto pb-1">
-        {bunks.map(b => (
-          <button key={b} onClick={() => setBunkFilter(b)}
-            className="px-3.5 py-2 rounded-xl text-sm font-semibold transition-colors flex-shrink-0"
-            style={bunkFilter === b
-              ? { backgroundColor: "#023B64", color: "#fff" }
-              : { color: "#64748b", backgroundColor: "#fff", border: "1px solid #e2e8f0" }}>
-            {b}
-          </button>
-        ))}
-      </div>
-
-      <CheckpointRosterView
-        campers={filtered}
-        checkpoint="Lunch"
-        staffName={staff.name}
-        actionLabel="Picked Up"
-        doneLabel="Picked Up"
-        groupLabel={bunkFilter === "All" ? undefined : bunkFilter}
-        emptyMessage="No buy-lunch campers in this group."
-      />
     </div>
   );
 }
@@ -2342,11 +2345,11 @@ function Admin() {
 
 // ─── Staff Management ─────────────────────────────────────────────────────────
 
-const ALL_ROLES: Role[] = ["counselor","specialist","carline","walkup","dispatcher","runner","director","admin","beforecare","aftercare","bus","lunch","unithead"];
+const ALL_ROLES: Role[] = ["counselor","specialist","carline","walkup","dispatcher","runner","director","admin","beforecare","aftercare","bus","unithead"];
 const ROLE_LABEL: Record<string, string> = {
   counselor:"Counselor",specialist:"Specialist",carline:"Carline",walkup:"Walk-Up",
   dispatcher:"Dispatcher",runner:"Runner",director:"Director",admin:"Admin",
-  beforecare:"Before Care",aftercare:"After Care",bus:"Bus",lunch:"Lunch",unithead:"Unit Head",
+  beforecare:"Before Care",aftercare:"After Care",bus:"Bus",unithead:"Unit Head",
 };
 
 type StaffFormData = {
@@ -2617,7 +2620,6 @@ const CAMPER_FIELDS: { key: string; label: string; required: boolean; boolean?: 
   { key: "hasAllergies",             label: "Has Allergies",             required: false, boolean: true },
   { key: "allergyDetails",           label: "Allergy Details",           required: false },
   { key: "hasNotes",                 label: "Has Notes",                 required: false, boolean: true },
-  { key: "lunchInfo",                label: "Lunch Info",                required: false },
   { key: "defaultMorningArrival",    label: "Default Morning Arrival",   required: false },
   { key: "defaultAfternoonDismissal",label: "Default Afternoon Dismissal",required: false },
   { key: "photoUrl",                 label: "Photo URL",                 required: false },
@@ -2627,6 +2629,7 @@ const CAMPER_FIELDS: { key: string; label: string; required: boolean; boolean?: 
   { key: "period4Group",             label: "Period 4 Group",            required: false },
   { key: "period5Group",             label: "Period 5 Group",            required: false },
   { key: "period6Group",             label: "Period 6 Group",            required: false },
+  { key: "period7Group",             label: "Period 7 Group",            required: false },
 ];
 
 const parseBool = (val: string) =>
@@ -2635,6 +2638,14 @@ const parseBool = (val: string) =>
 const normalizeBusRoute = (val: string) => {
   const t = val.trim();
   return /^[1-6]$/.test(t) ? `Bus ${t}` : t;
+};
+
+// CampMinder exports photoUrl as an <img> tag — extract the src attribute if present.
+const normalizePhotoUrl = (val: string): string => {
+  const t = val.trim();
+  if (!t) return "";
+  const match = t.match(/src=['"]([^'"]+)['"]/i);
+  return match ? match[1] : t.startsWith("http") ? t : "";
 };
 
 const csvEscape = (val: unknown): string => {
@@ -2649,7 +2660,7 @@ const EXPORT_COLUMNS = [
   "bunk","unit","grade","campSection","camp","campDivision",
   "code","transportationType","busRoute","beforeCare","afterCare",
   "defaultMorningArrival","defaultAfternoonDismissal",
-  "hasAllergies","allergyDetails","hasNotes","lunchInfo",
+  "hasAllergies","allergyDetails","hasNotes",
   "arrivalStatus","arrivalType","bunkConfirmed","leftEarly","tLeftEarly",
   "status","callSource","runner","tCalled","tAssigned","tPickedUp","tDismissed",
   "attendanceNote","lateDropoffTime","earlyPickupTime",
@@ -2785,7 +2796,7 @@ function CamperUpload() {
         const camper: Record<string, unknown> = { name, bunk, code, status: "Waiting" as const };
 
         for (const field of CAMPER_FIELDS) {
-          if (["name","bunk","code","lastName","preferredName","period1Group","period2Group","period3Group","period4Group","period5Group","period6Group"].includes(field.key)) continue;
+          if (["name","bunk","code","lastName","preferredName","period1Group","period2Group","period3Group","period4Group","period5Group","period6Group","period7Group"].includes(field.key)) continue;
           const csvCol = mapping[field.key];
           if (!csvCol) continue;
           const val = row[csvCol]?.trim();
@@ -2794,6 +2805,9 @@ function CamperUpload() {
             camper[field.key] = parseBool(val);
           } else if (field.key === "busRoute") {
             camper[field.key] = normalizeBusRoute(val);
+          } else if (field.key === "photoUrl") {
+            const url = normalizePhotoUrl(val);
+            if (url) camper[field.key] = url;
           } else {
             camper[field.key] = val;
           }
@@ -2807,7 +2821,7 @@ function CamperUpload() {
 
         // Period groups → periodGroups record
         const periodGroups: Record<string, string> = {};
-        for (let p = 1; p <= 6; p++) {
+        for (let p = 1; p <= 7; p++) {
           const key = `period${p}Group`;
           const col = mapping[key];
           if (col && row[col]?.trim()) periodGroups[`Period${p}`] = row[col].trim();
@@ -2896,7 +2910,7 @@ function CamperUpload() {
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Strongly recommended</p>
               <div className="flex flex-wrap gap-1.5">
-                {["preferredName","grade","unit","campSection","camp","campDivision","transportationType","busRoute","beforeCare","afterCare","hasAllergies","allergyDetails","hasNotes","lunchInfo","defaultMorningArrival","defaultAfternoonDismissal","photoUrl"].map(c => (
+                {["preferredName","grade","unit","campSection","camp","campDivision","transportationType","busRoute","beforeCare","afterCare","hasAllergies","allergyDetails","hasNotes","defaultMorningArrival","defaultAfternoonDismissal","photoUrl"].map(c => (
                   <span key={c} className="px-2 py-1 bg-blue-50 text-blue-700 rounded-lg text-xs font-mono">{c}</span>
                 ))}
               </div>
@@ -2905,7 +2919,7 @@ function CamperUpload() {
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Optional (period groups)</p>
               <div className="flex flex-wrap gap-1.5">
-                {["period1Group","period2Group","period3Group","period4Group","period5Group","period6Group"].map(c => (
+                {["period1Group","period2Group","period3Group","period4Group","period5Group","period6Group","period7Group"].map(c => (
                   <span key={c} className="px-2 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-mono">{c}</span>
                 ))}
               </div>
@@ -2918,7 +2932,6 @@ function CamperUpload() {
                 <p><span className="font-semibold">busRoute:</span> <span className="text-slate-500">"Bus 1"–"Bus 6" or just "1"–"6" (auto-normalized)</span></p>
                 <p><span className="font-semibold">beforeCare / afterCare / hasAllergies / hasNotes:</span> <span className="text-slate-500">TRUE / FALSE · Yes / No · 1 / 0</span></p>
                 <p><span className="font-semibold">code:</span> <span className="text-slate-500">3-digit pickup code — treat as text, preserve leading zeros</span></p>
-                <p><span className="font-semibold">lunchInfo:</span> <span className="text-slate-500">blank = buys lunch · any text = what they bring</span></p>
               </div>
             </div>
 
@@ -2930,14 +2943,14 @@ function CamperUpload() {
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Sample header row</p>
               <div className="bg-slate-900 text-green-300 rounded-xl p-3 text-[10px] font-mono overflow-x-auto whitespace-nowrap">
-                firstName,lastName,preferredName,bunk,unit,grade,campSection,camp,campDivision,code,transportationType,busRoute,beforeCare,afterCare,hasAllergies,allergyDetails,hasNotes,lunchInfo,defaultMorningArrival,defaultAfternoonDismissal,photoUrl,period1Group,period2Group,period3Group,period4Group,period5Group,period6Group
+                firstName,lastName,preferredName,bunk,unit,grade,campSection,camp,campDivision,code,transportationType,busRoute,beforeCare,afterCare,hasAllergies,allergyDetails,hasNotes,defaultMorningArrival,defaultAfternoonDismissal,photoUrl,period1Group,period2Group,period3Group,period4Group,period5Group,period6Group,period7Group
               </div>
             </div>
 
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Sample data row</p>
               <div className="bg-slate-900 text-green-300 rounded-xl p-3 text-[10px] font-mono overflow-x-auto whitespace-nowrap">
-                Jacob,Cohen,Jake,L1,Lower,1,Lower,Kaleidoscope,Lower Division,123,Bus,Bus 2,No,Yes,Yes,Peanut allergy,Yes,,Bus,AfterCare,,,,,,,
+                Jacob,Cohen,Jake,L1,Lower,1,Lower,Kaleidoscope,Lower Division,123,Bus,Bus 2,No,Yes,Yes,Peanut allergy,Yes,Bus,AfterCare,,,,,,,,
               </div>
             </div>
 
@@ -2989,7 +3002,7 @@ function CamperUpload() {
                   onChange={e => setMapping({ ...mapping, [field.key]: e.target.value })}
                   className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none max-w-[150px]">
                   <option value="">— skip —</option>
-                  {csvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                  {csvData.headers.map((h, i) => <option key={`${h}__${i}`} value={h}>{h || `(column ${i + 1})`}</option>)}
                 </select>
               </div>
             ))}
