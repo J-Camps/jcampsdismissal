@@ -255,6 +255,40 @@ export const clearDailyState = mutation({
 // Alias for backward compat — prefer clearDailyState in new code.
 export const resetDay = clearDailyState;
 
+// ─── Nuclear option: wipe every camper and all their related rows ─────────────
+// Staff, roles, and app config are untouched.
+// Used only before uploading a fresh weekly/session camper CSV.
+export const deleteAllCampers = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const campers = await ctx.db.query("campers").collect();
+    const camperIds = new Set(campers.map(c => c._id));
+
+    // Delete related rows first so foreign-key references are gone before campers
+    const overrides = await ctx.db.query("dailyOverrides").collect();
+    for (const r of overrides) {
+      if (camperIds.has(r.camperId)) await ctx.db.delete(r._id);
+    }
+
+    const exceptions = await ctx.db.query("attendanceExceptions").collect();
+    for (const r of exceptions) {
+      if (camperIds.has(r.camperId)) await ctx.db.delete(r._id);
+    }
+
+    const logs = await ctx.db.query("attendanceLogs").collect();
+    for (const r of logs) {
+      if (camperIds.has(r.camperId)) await ctx.db.delete(r._id);
+    }
+
+    // Now delete the campers themselves
+    for (const c of campers) {
+      await ctx.db.delete(c._id);
+    }
+
+    return { deleted: campers.length };
+  },
+});
+
 // ─── New Attendance Mutations ────────────────────────────────────────────────
 
 export const updateArrival = mutation({

@@ -73,6 +73,67 @@ const today = () => new Date().toISOString().split("T")[0];
 type StaffDoc  = Doc<"staff">;
 type CamperDoc = Doc<"campers">;
 
+// ─── Campus Presence Helpers ──────────────────────────────────────────────────
+// Two separate concerns:
+//   campusPresence  = is the camper currently at camp?  (Here / NotHere / NeedAction)
+//   locationDetail  = where specifically are they?       (In Bunk / In After Care / etc.)
+//
+// NeedAction is reserved for campers who have an arrival signal but an unresolved
+// exception gap — the system can't confirm where they are right now.
+
+type CampusPresence = "Here" | "NotHere" | "NeedAction";
+
+interface CampusPresenceResult {
+  status: CampusPresence;
+  label: string;   // "Here" | "Not Here" | "Need Action"
+  detail: string;  // e.g. "In Bunk", "Not Arrived", "Absent"
+}
+
+function getCampusPresence(
+  c: CamperDoc,
+  exceptions: AttendanceException[] = [],
+): CampusPresenceResult {
+  // Definitely absent
+  if (c.arrivalStatus === "Absent")   return { status: "NotHere", label: "Not Here", detail: "Absent" };
+  // Fully dismissed — gone for the day
+  if (c.status === "Dismissed")       return { status: "NotHere", label: "Not Here", detail: "Dismissed" };
+
+  // Has any arrival signal?
+  const hasArrival =
+    c.arrivalStatus === "Arrived" ||
+    !!c.bunkConfirmed ||
+    !!c.dailyCheckpoints?.BeforeCare ||
+    !!c.dailyCheckpoints?.AfterCare  ||
+    !!c.dailyCheckpoints?.Bus        ||
+    c.status === "Called" || c.status === "Assigned" || c.status === "Picked Up";
+
+  if (!hasArrival) return { status: "NotHere", label: "Not Here", detail: "Not Arrived" };
+
+  // Has an unresolved exception — location unknown
+  const hasException = exceptions.some(e => e.camperId === c._id && !e.isResolved);
+  if (hasException) return { status: "NeedAction", label: "Need Action", detail: "Location unknown" };
+
+  // Determine specific location
+  if (c.dailyCheckpoints?.AfterCare && !c.dailyCheckpointsOut?.AfterCare) {
+    return { status: "Here", label: "Here", detail: "In After Care" };
+  }
+  if (c.dailyCheckpoints?.Bus && !c.dailyCheckpointsOut?.Bus) {
+    return { status: "Here", label: "Here", detail: "In Bus Room" };
+  }
+  if (c.bunkConfirmed && c.leftEarly) {
+    return { status: "Here", label: "Here", detail: "Left for Day" };
+  }
+  if (c.bunkConfirmed) {
+    return { status: "Here", label: "Here", detail: "In Bunk" };
+  }
+  if (c.dailyCheckpoints?.BeforeCare) {
+    return { status: "Here", label: "Here", detail: "In Before Care" };
+  }
+  // Arrived via carline/bus/director but not yet at bunk — handled as NeedAction above
+  // unless exception was resolved
+  return { status: "Here", label: "Here", detail: "On Campus" };
+}
+
 // Full display name (preferred + last when available)
 const camperName = (c: CamperDoc) =>
   c.preferredName ? `${c.preferredName}${c.lastName ? " " + c.lastName : ""}` : c.name;
@@ -573,7 +634,7 @@ function AdminBunkView({ staff }: { staff: StaffDoc }) {
 
 // ─── Camper Detail Sheet ──────────────────────────────────────────────────────
 
-function CamperDetailSheet({ camper, onClose, hideCode = false, staffName }: { camper: CamperDoc; onClose: () => void; hideCode?: boolean; staffName?: string }) {
+function CamperDetailSheet({ camper, onClose, hideCode = false, staffName, isAdmin = false }: { camper: CamperDoc; onClose: () => void; hideCode?: boolean; staffName?: string; isAdmin?: boolean }) {
   const logs = useQuery(api.attendanceLogs.getByCamper, {
     camperId: camper._id,
     date: today(),
@@ -599,18 +660,20 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName }: { c
   const isLeftEarly = !!(camper.bunkConfirmed && camper.leftEarly);
   const checkpoints: { label: string; done: boolean; value?: string; badge?: { label: string; style: string } }[] = [
     {
-      label: isAbsent ? "Marked absent" : (camper.bunkConfirmed ? "Checked in at bunk" : "Not checked in"),
+      label: isAbsent ? "Absent today" : (camper.bunkConfirmed ? "In Bunk" : "Not Yet at Bunk"),
       done:  !!(camper.bunkConfirmed || isAbsent),
       badge: isAbsent ? { label: "Absent", style: "text-amber-600 bg-amber-100" } : undefined,
     },
     {
-      label: "Checked out for dismissal",
+      label: camper.dailyCheckpoints?.AfterCare ? "In After Care"
+           : camper.dailyCheckpoints?.Bus ? "In Bus Room"
+           : "Left for Day",
       done:  isLeftEarly,
-      badge: isLeftEarly ? { label: "Checked Out", style: "text-violet-600 bg-violet-100" } : undefined,
+      badge: isLeftEarly ? { label: camper.dailyCheckpoints?.AfterCare ? "In After Care" : camper.dailyCheckpoints?.Bus ? "In Bus Room" : "Left for Day", style: "text-violet-600 bg-violet-100" } : undefined,
     },
     { label: "Called for pickup", done: camper.status !== "Waiting", value: camper.status !== "Waiting" ? camper.status : undefined },
-    { label: "Runner assigned",   done: !!(camper.runner),           value: camper.runner ?? undefined },
-    { label: "Picked up",         done: camper.status === "Picked Up" || camper.status === "Dismissed" },
+    { label: "With Runner",       done: !!(camper.runner),           value: camper.runner ?? undefined },
+    { label: "Dismissed",         done: camper.status === "Picked Up" || camper.status === "Dismissed" },
   ];
 
   return (
@@ -766,22 +829,22 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName }: { c
                     Undo Check Out
                   </button>
                 )}
-                {!isAbsent && (
+                {isAdmin && !isAbsent && (
                   <button onClick={() => doMarkAbsent({ id: camper._id, staffName })}
                     className="text-sm font-semibold text-amber-700 bg-amber-50 rounded-xl py-2.5 active:bg-amber-100">
                     Mark Absent
                   </button>
                 )}
-                {isAbsent && (
+                {isAdmin && isAbsent && (
                   <button onClick={() => resetMorning({ id: camper._id })}
                     className="text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl py-2.5 active:bg-slate-200">
                     Undo Absent
                   </button>
                 )}
-                {(camper.bunkConfirmed || isAbsent) && (
+                {isAdmin && (camper.bunkConfirmed || isAbsent) && (
                   <button onClick={() => resetMorning({ id: camper._id })}
                     className="text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl py-2.5 active:bg-slate-200">
-                    Reset to Not Checked In
+                    Reset Status
                   </button>
                 )}
               </div>
@@ -1068,10 +1131,12 @@ function CounselorBunkView({ staff, bunk, exceptions = [] }: {
     return { c, isAbsent, arrived, dismissed };
   });
 
-  const inCount     = items.filter(i => i.arrived).length;
-  const outCount    = items.filter(i => i.dismissed).length;
-  const absentCount = items.filter(i => i.isAbsent).length;
-  const called      = roster.filter(c => c.status === "Called" || c.status === "Assigned");
+  const absentCount     = items.filter(i => i.isAbsent).length;
+  const leftForDayCount = items.filter(i => i.dismissed && !i.isAbsent).length;
+  const hereCount       = items.filter(i => getCampusPresence(i.c, exceptions).status === "Here").length;
+  const notHereCount    = items.filter(i => getCampusPresence(i.c, exceptions).status === "NotHere").length;
+  const needActionCount = items.filter(i => getCampusPresence(i.c, exceptions).status === "NeedAction").length;
+  const called          = roster.filter(c => c.status === "Called" || c.status === "Assigned");
 
   const toggleAM = (c: CamperDoc) => {
     if (c.arrivalStatus === "Absent") return;
@@ -1102,14 +1167,15 @@ function CounselorBunkView({ staff, bunk, exceptions = [] }: {
 
         {/* Summary strip */}
         <div className="flex gap-2">
-          <Pill value={inCount}  label="In"  color="slate" />
-          <Pill value={outCount} label="Out" color="slate" />
+          <Pill value={hereCount}       label="Here"        color="green" />
+          <Pill value={notHereCount}    label="Not Here"    color="slate" />
+          {needActionCount > 0 && <Pill value={needActionCount} label="Need Action" color="amber" />}
         </div>
-        {absentCount > 0 && (
-          <div className="text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl px-3 py-2.5 text-center">
-            {absentCount} camper{absentCount !== 1 ? "s" : ""} absent today
-          </div>
-        )}
+        <p className="text-xs text-slate-500 text-center -mt-1">
+          {items.length} enrolled
+          {absentCount > 0 ? ` · ${absentCount} absent` : ""}
+          {leftForDayCount > 0 ? ` · ${leftForDayCount} left for day` : ""}
+        </p>
 
         {/* Called-for-pickup alert */}
         {called.length > 0 && (
@@ -1185,7 +1251,7 @@ function CounselorBunkView({ staff, bunk, exceptions = [] }: {
         ))}
       </div>
 
-      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode staffName={staff.name} />}
+      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode staffName={staff.name} isAdmin={isAdmin} />}
       {flagsOpen && <DailyFlagsPanel campers={sorted} bunk={bunk} staffName={staff.name} onClose={() => setFlagsOpen(false)} />}
     </>
   );
@@ -1205,6 +1271,13 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, exception, onOpen
   const name = camperName(camper);
   const bg = avatarBg(camper.name);
   const isCalled  = camper.status === "Called" || camper.status === "Assigned";
+  const presence  = getCampusPresence(camper, exception ? [{ ...exception, camperId: camper._id }] : []);
+
+  const PRESENCE_STYLE: Record<CampusPresence, string> = {
+    Here:       "text-green-700",
+    NotHere:    "text-slate-500",
+    NeedAction: "text-amber-700",
+  };
 
   const buysLunch = !camper.lunchInfo?.trim();
   const lunchPickedUp = !!camper.dailyCheckpoints?.Lunch;
@@ -1251,7 +1324,9 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, exception, onOpen
                 <UtensilsCrossed size={10} />{camper.lunchInfo}
               </span>
             )}
-            {isAbsent && <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">Absent</span>}
+            <span className={`text-xs font-semibold ${PRESENCE_STYLE[presence.status]}`}>
+              {presence.label} · {presence.detail}
+            </span>
             {camper.lateDropoffTime && (
               <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 flex items-center gap-0.5">
                 <Clock size={10} />Late {fmtClock(camper.lateDropoffTime)}
@@ -1560,9 +1635,9 @@ function InOutRosterView({
     <>
       <div className="space-y-4">
         <div className="flex gap-2">
-          <Pill value={here.length}  label={inLabel}  color="green" />
+          <Pill value={here.length}  label="Here"    color="green" />
           <Pill value={out.length}   label={outLabel} color="blue" />
-          <Pill value={notIn.length} label="Not Yet"  color="slate" />
+          <Pill value={notIn.length} label="Not Yet" color="slate" />
         </div>
 
         <div className="space-y-2">
@@ -1633,7 +1708,7 @@ function InOutCamperRow({
           className="flex-1 py-3.5 text-sm font-bold flex items-center justify-center gap-1.5 transition-colors active:opacity-80"
           style={isIn ? { backgroundColor: "#dcfce7", color: "#15803d" } : { backgroundColor: "#023B64", color: "#fff" }}>
           {isIn ? <Check size={15} /> : null}
-          {isIn ? inLabel : inLabel}
+          {isIn ? "Here" : inLabel}
         </button>
         <button onClick={onToggleOut} disabled={!isIn}
           className="flex-1 py-3.5 text-sm font-bold flex items-center justify-center gap-1.5 transition-colors active:opacity-80 border-l border-slate-100"
@@ -1655,7 +1730,7 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   if (roster === undefined) return <Loading />;
 
   const title = kind === "BeforeCare" ? "Before Care" : "After Care";
-  const outLabel = kind === "BeforeCare" ? "Left for Bunk" : "Picked Up";
+  const outLabel = kind === "BeforeCare" ? "Out to Bunk" : "Picked Up";
   return (
     <div className="space-y-4">
       <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{title}</h2>
@@ -1663,7 +1738,7 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
         campers={roster}
         checkpoint={kind}
         staffName={staff.name}
-        inLabel="Arrived"
+        inLabel="Mark In"
         outLabel={outLabel}
         groupLabel={title}
         emptyMessage={`No campers are enrolled in ${title}.`}
@@ -2089,7 +2164,7 @@ function RunnerView({ runnerName }: { runnerName: string }) {
                 <button onClick={() => pickUp({ id: c._id })}
                   className="w-full py-4 font-bold text-base text-white flex items-center justify-center gap-2 active:opacity-80"
                   style={{ backgroundColor: "#5B8C9D" }}>
-                  <Check size={20} /> Picked Up from Bunk
+                  <Check size={20} /> With Me
                 </button>
               )}
               {isPickedUp && (
@@ -2522,46 +2597,135 @@ function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
   return { headers, rows };
 }
 
-const CAMPER_FIELDS = [
-  { key: "name", label: "First Name", required: true },
-  { key: "lastName", label: "Last Name", required: false },
-  { key: "preferredName", label: "Preferred Name", required: false },
-  { key: "bunk", label: "Bunk", required: true },
-  { key: "code", label: "Safety Code", required: true },
-  { key: "grade", label: "Grade", required: false },
-  { key: "unit", label: "Unit", required: false },
-  { key: "campSection", label: "Camp Section", required: false },
-  { key: "camp", label: "Camp", required: false },
-  { key: "campDivision", label: "Camp Division", required: false },
-  { key: "busRoute", label: "Bus Route", required: false },
-  { key: "transportationType", label: "Transport Type", required: false },
-  { key: "lunchInfo", label: "Lunch Info", required: false },
-  { key: "allergyDetails", label: "Allergy Details", required: false },
-  { key: "defaultMorningArrival", label: "Default Morning Arrival", required: false },
-  { key: "defaultAfternoonDismissal", label: "Default Afternoon Dismissal", required: false },
+// ─── Upload field map ─────────────────────────────────────────────────────────
+
+const CAMPER_FIELDS: { key: string; label: string; required: boolean; boolean?: boolean }[] = [
+  { key: "name",                     label: "First Name",                required: true  },
+  { key: "lastName",                 label: "Last Name",                 required: false },
+  { key: "preferredName",            label: "Preferred Name",            required: false },
+  { key: "bunk",                     label: "Bunk",                      required: true  },
+  { key: "code",                     label: "Safety Code",               required: true  },
+  { key: "grade",                    label: "Grade",                     required: false },
+  { key: "unit",                     label: "Unit",                      required: false },
+  { key: "campSection",              label: "Camp Section",              required: false },
+  { key: "camp",                     label: "Camp",                      required: false },
+  { key: "campDivision",             label: "Camp Division",             required: false },
+  { key: "transportationType",       label: "Transport Type",            required: false },
+  { key: "busRoute",                 label: "Bus Route",                 required: false },
+  { key: "beforeCare",               label: "Before Care",               required: false, boolean: true },
+  { key: "afterCare",                label: "After Care",                required: false, boolean: true },
+  { key: "hasAllergies",             label: "Has Allergies",             required: false, boolean: true },
+  { key: "allergyDetails",           label: "Allergy Details",           required: false },
+  { key: "hasNotes",                 label: "Has Notes",                 required: false, boolean: true },
+  { key: "lunchInfo",                label: "Lunch Info",                required: false },
+  { key: "defaultMorningArrival",    label: "Default Morning Arrival",   required: false },
+  { key: "defaultAfternoonDismissal",label: "Default Afternoon Dismissal",required: false },
+  { key: "photoUrl",                 label: "Photo URL",                 required: false },
+  { key: "period1Group",             label: "Period 1 Group",            required: false },
+  { key: "period2Group",             label: "Period 2 Group",            required: false },
+  { key: "period3Group",             label: "Period 3 Group",            required: false },
+  { key: "period4Group",             label: "Period 4 Group",            required: false },
+  { key: "period5Group",             label: "Period 5 Group",            required: false },
+  { key: "period6Group",             label: "Period 6 Group",            required: false },
 ];
 
+const parseBool = (val: string) =>
+  ["true", "1", "yes"].includes(val.toLowerCase().trim());
+
+const normalizeBusRoute = (val: string) => {
+  const t = val.trim();
+  return /^[1-6]$/.test(t) ? `Bus ${t}` : t;
+};
+
+const csvEscape = (val: unknown): string => {
+  if (val === null || val === undefined) return "";
+  const s = typeof val === "object" ? JSON.stringify(val) : String(val);
+  return s.includes(",") || s.includes('"') || s.includes("\n")
+    ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+const EXPORT_COLUMNS = [
+  "name","preferredName","lastName","photoUrl",
+  "bunk","unit","grade","campSection","camp","campDivision",
+  "code","transportationType","busRoute","beforeCare","afterCare",
+  "defaultMorningArrival","defaultAfternoonDismissal",
+  "hasAllergies","allergyDetails","hasNotes","lunchInfo",
+  "arrivalStatus","arrivalType","bunkConfirmed","leftEarly","tLeftEarly",
+  "status","callSource","runner","tCalled","tAssigned","tPickedUp","tDismissed",
+  "attendanceNote","lateDropoffTime","earlyPickupTime",
+  "dailyArrivalOverride","dailyDismissalOverride",
+  "dailyCheckpoints","dailyCheckpointsOut","periodGroups","periodAttendance",
+  "exportDate","exportTime",
+];
+
+// ─── CamperUpload ─────────────────────────────────────────────────────────────
+
 function CamperUpload() {
-  const [step, setStep] = useState<"pick" | "map" | "preview" | "done">("pick");
+  const allCampers   = useQuery(api.campers.list);
+  const createCamper = useMutation(api.campers.create);
+  const deleteAll    = useMutation(api.campers.deleteAllCampers);
+
+  // Upload flow
+  const [step, setStep]       = useState<"pick"|"map"|"preview"|"done">("pick");
   const [csvData, setCsvData] = useState<{ headers: string[]; rows: CsvRow[] }>({ headers: [], rows: [] });
   const [mapping, setMapping] = useState<Record<string, string>>({});
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [result, setResult] = useState<{ added: number; errors: string[] }>({ added: 0, errors: [] });
-  const createCamper = useMutation(api.campers.create);
+  const [result, setResult]   = useState<{ added: number; skipped: number; errors: string[] }>({ added: 0, skipped: 0, errors: [] });
 
+  // Clear modal
+  const [showClear, setShowClear]         = useState(false);
+  const [clearText, setClearText]         = useState("");
+  const [clearing, setClearing]           = useState(false);
+  const [clearSuccess, setClearSuccess]   = useState(false);
+
+  // Instructions panel
+  const [showInstructions, setShowInstructions] = useState(false);
+
+  // ── Export ──────────────────────────────────────────────────────────────────
+  const handleExport = () => {
+    if (!allCampers?.length) return;
+    const now      = new Date();
+    const dateStr  = now.toISOString().split("T")[0];
+    const timeStr  = now.toLocaleTimeString();
+    const rows = allCampers.map(c => {
+      const rec = c as Record<string, unknown>;
+      return EXPORT_COLUMNS.map(col => {
+        if (col === "exportDate") return csvEscape(dateStr);
+        if (col === "exportTime") return csvEscape(timeStr);
+        return csvEscape(rec[col]);
+      }).join(",");
+    });
+    const csv  = [EXPORT_COLUMNS.join(","), ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url  = URL.createObjectURL(blob);
+    const a    = Object.assign(document.createElement("a"), { href: url, download: `jcamp-attendance-export-${dateStr}.csv` });
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ── Clear ───────────────────────────────────────────────────────────────────
+  const handleClear = async () => {
+    setClearing(true);
+    await deleteAll({});
+    setClearing(false);
+    setClearSuccess(true);
+    setClearText("");
+  };
+
+  // ── File picker ─────────────────────────────────────────────────────────────
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const text = ev.target?.result as string;
-      const parsed = parseCsv(text);
+      const parsed = parseCsv(ev.target?.result as string);
       setCsvData(parsed);
       const autoMap: Record<string, string> = {};
       for (const field of CAMPER_FIELDS) {
         const match = parsed.headers.find(h =>
-          h.toLowerCase().replace(/[^a-z]/g, "") === field.key.toLowerCase().replace(/[^a-z]/g, "")
-          || h.toLowerCase().includes(field.label.toLowerCase())
+          h.toLowerCase().replace(/[^a-z0-9]/g, "") === field.key.toLowerCase().replace(/[^a-z0-9]/g, "")
+          || h.toLowerCase().replace(/[^a-z]/g, "").includes(field.label.toLowerCase().replace(/[^a-z]/g, ""))
         );
         if (match) autoMap[field.key] = match;
       }
@@ -2571,149 +2735,437 @@ function CamperUpload() {
     reader.readAsText(file);
   };
 
-  const requiredMapped = CAMPER_FIELDS.filter(f => f.required).every(f => mapping[f.key]);
+  // ── Preview & warnings ──────────────────────────────────────────────────────
+  const buildWarnings = () => {
+    const w: string[] = [];
+    const seenCodes = new Map<string, number>();
+    const seenNames = new Map<string, number>();
+    csvData.rows.forEach((row, i) => {
+      const rowNum = i + 2;
+      const code = row[mapping.code]?.trim();
+      const firstName = row[mapping.name]?.trim();
+      const lastName  = mapping.lastName ? row[mapping.lastName]?.trim() : "";
+      const bunk = row[mapping.bunk]?.trim();
+      if (!bunk) w.push(`Row ${rowNum}: missing bunk`);
+      if (!code) w.push(`Row ${rowNum}: missing safety code`);
+      if (code) {
+        if (seenCodes.has(code)) w.push(`Row ${rowNum}: duplicate code "${code}" (also row ${seenCodes.get(code)})`);
+        else seenCodes.set(code, rowNum);
+      }
+      if (firstName) {
+        const fullName = `${firstName} ${lastName}`.trim();
+        if (seenNames.has(fullName)) w.push(`Row ${rowNum}: duplicate name "${fullName}" (also row ${seenNames.get(fullName)})`);
+        else seenNames.set(fullName, rowNum);
+      }
+    });
+    return w;
+  };
 
+  const goToPreview = () => {
+    setWarnings(buildWarnings());
+    setStep("preview");
+  };
+
+  // ── Upload ──────────────────────────────────────────────────────────────────
   const handleUpload = async () => {
     setUploading(true);
-    let added = 0;
+    let added = 0, skipped = 0;
     const errors: string[] = [];
     for (let i = 0; i < csvData.rows.length; i++) {
       const row = csvData.rows[i];
       try {
-        const name = row[mapping.name] ?? "";
-        const bunk = row[mapping.bunk] ?? "";
-        const code = row[mapping.code] ?? "";
-        if (!name || !bunk || !code) { errors.push(`Row ${i + 2}: missing required field`); continue; }
-        const camper: Record<string, unknown> = {
-          name, bunk, code, status: "Waiting" as const,
-        };
+        const name = row[mapping.name]?.trim() ?? "";
+        const bunk = row[mapping.bunk]?.trim() ?? "";
+        const code = row[mapping.code]?.trim() ?? "";
+        if (!name || !bunk || !code) {
+          errors.push(`Row ${i + 2}: missing required field (name/bunk/code)`);
+          skipped++;
+          continue;
+        }
+        const camper: Record<string, unknown> = { name, bunk, code, status: "Waiting" as const };
+
         for (const field of CAMPER_FIELDS) {
-          if (field.required) continue;
+          if (["name","bunk","code","lastName","preferredName","period1Group","period2Group","period3Group","period4Group","period5Group","period6Group"].includes(field.key)) continue;
           const csvCol = mapping[field.key];
           if (!csvCol) continue;
           const val = row[csvCol]?.trim();
           if (!val) continue;
-          if (field.key === "hasAllergies") {
-            camper[field.key] = val.toLowerCase() === "true" || val === "1" || val.toLowerCase() === "yes";
+          if (field.boolean) {
+            camper[field.key] = parseBool(val);
+          } else if (field.key === "busRoute") {
+            camper[field.key] = normalizeBusRoute(val);
           } else {
             camper[field.key] = val;
           }
         }
-        if (camper.allergyDetails && !camper.hasAllergies) camper.hasAllergies = true;
-        if (mapping.lastName && row[mapping.lastName]?.trim()) camper.lastName = row[mapping.lastName].trim();
+
+        // Name fields
+        if (mapping.lastName    && row[mapping.lastName]?.trim())     camper.lastName     = row[mapping.lastName].trim();
         if (mapping.preferredName && row[mapping.preferredName]?.trim()) camper.preferredName = row[mapping.preferredName].trim();
+        // allergyDetails implies hasAllergies
+        if (camper.allergyDetails && !camper.hasAllergies) camper.hasAllergies = true;
+
+        // Period groups → periodGroups record
+        const periodGroups: Record<string, string> = {};
+        for (let p = 1; p <= 6; p++) {
+          const key = `period${p}Group`;
+          const col = mapping[key];
+          if (col && row[col]?.trim()) periodGroups[`Period${p}`] = row[col].trim();
+        }
+        if (Object.keys(periodGroups).length) camper.periodGroups = periodGroups;
+
         await createCamper(camper as Parameters<typeof createCamper>[0]);
         added++;
       } catch (err: unknown) {
         errors.push(`Row ${i + 2}: ${err instanceof Error ? err.message : "failed"}`);
+        skipped++;
       }
     }
-    setResult({ added, errors });
+    setResult({ added, skipped, errors });
     setUploading(false);
     setStep("done");
   };
 
+  const requiredMapped = CAMPER_FIELDS.filter(f => f.required).every(f => mapping[f.key]);
+
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <ArrowRight size={22} className="text-slate-700" />
-        <h2 className="text-xl font-bold text-slate-900">Upload Camper Data</h2>
+    <div className="space-y-5 pb-10">
+
+      {/* Header */}
+      <h2 className="text-xl font-bold" style={{ color: "#023B64" }}>Upload &amp; Data Management</h2>
+
+      {/* Admin tools */}
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-100">
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Admin Tools</p>
+        </div>
+
+        {/* Export */}
+        <button onClick={handleExport} disabled={!allCampers?.length}
+          className="w-full flex items-center gap-3 px-4 py-3.5 text-left border-b border-slate-100 active:bg-slate-50 disabled:opacity-40">
+          <div className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center flex-shrink-0">
+            <ArrowRight size={16} className="text-blue-600 -rotate-90" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-slate-900">Export Today's Data CSV</p>
+            <p className="text-xs text-slate-400 mt-0.5">
+              {allCampers ? `${allCampers.length} campers · all live state` : "Loading…"}
+            </p>
+          </div>
+          <ChevronRight size={16} className="text-slate-300" />
+        </button>
+
+        {/* Clear */}
+        <button onClick={() => { setShowClear(true); setClearSuccess(false); setClearText(""); }}
+          className="w-full flex items-center gap-3 px-4 py-3.5 text-left active:bg-red-50">
+          <div className="w-9 h-9 rounded-xl bg-red-50 flex items-center justify-center flex-shrink-0">
+            <X size={16} className="text-red-500" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-red-600">Clear All Camper Data</p>
+            <p className="text-xs text-slate-400 mt-0.5">Remove all campers before uploading a new file. Staff unaffected.</p>
+          </div>
+          <ChevronRight size={16} className="text-slate-300" />
+        </button>
       </div>
 
-      {step === "pick" && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-6 text-center space-y-4">
-          <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mx-auto">
-            <ArrowRight size={28} className="text-slate-400 rotate-90" />
+      {/* CSV Format Instructions */}
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+        <button onClick={() => setShowInstructions(v => !v)}
+          className="w-full flex items-center justify-between px-4 py-3.5 text-left active:bg-slate-50">
+          <div>
+            <p className="text-sm font-semibold text-slate-900">CSV Format for Camper Upload</p>
+            <p className="text-xs text-slate-400 mt-0.5">Column names, accepted values, and sample row</p>
           </div>
-          <p className="text-slate-600 font-medium">Upload a CSV file with camper data</p>
-          <p className="text-xs text-slate-400">Required columns: First Name, Bunk, Safety Code</p>
-          <label className="inline-block cursor-pointer">
-            <span className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white rounded-xl active:opacity-80"
-              style={{ backgroundColor: "#023B64" }}>
-              Choose CSV File
-            </span>
-            <input type="file" accept=".csv" onChange={handleFile} className="hidden" />
-          </label>
+          {showInstructions ? <ChevronUp size={18} className="text-slate-400" /> : <ChevronDown size={18} className="text-slate-400" />}
+        </button>
+
+        {showInstructions && (
+          <div className="border-t border-slate-100 px-4 py-4 space-y-4 text-sm">
+
+            <div>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Required columns</p>
+              <div className="flex flex-wrap gap-1.5">
+                {["firstName","lastName","bunk","code"].map(c => (
+                  <span key={c} className="px-2 py-1 bg-red-50 text-red-700 rounded-lg text-xs font-mono font-semibold">{c}</span>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Strongly recommended</p>
+              <div className="flex flex-wrap gap-1.5">
+                {["preferredName","grade","unit","campSection","camp","campDivision","transportationType","busRoute","beforeCare","afterCare","hasAllergies","allergyDetails","hasNotes","lunchInfo","defaultMorningArrival","defaultAfternoonDismissal","photoUrl"].map(c => (
+                  <span key={c} className="px-2 py-1 bg-blue-50 text-blue-700 rounded-lg text-xs font-mono">{c}</span>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Optional (period groups)</p>
+              <div className="flex flex-wrap gap-1.5">
+                {["period1Group","period2Group","period3Group","period4Group","period5Group","period6Group"].map(c => (
+                  <span key={c} className="px-2 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-mono">{c}</span>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Accepted values</p>
+              <div className="bg-slate-50 rounded-xl p-3 space-y-2 text-xs">
+                <p><span className="font-semibold">transportationType:</span> <span className="text-slate-500">Bus · AfterCare · Carline · WalkUp</span></p>
+                <p><span className="font-semibold">busRoute:</span> <span className="text-slate-500">"Bus 1"–"Bus 6" or just "1"–"6" (auto-normalized)</span></p>
+                <p><span className="font-semibold">beforeCare / afterCare / hasAllergies / hasNotes:</span> <span className="text-slate-500">TRUE / FALSE · Yes / No · 1 / 0</span></p>
+                <p><span className="font-semibold">code:</span> <span className="text-slate-500">3-digit pickup code — treat as text, preserve leading zeros</span></p>
+                <p><span className="font-semibold">lunchInfo:</span> <span className="text-slate-500">blank = buys lunch · any text = what they bring</span></p>
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Name behavior</p>
+              <p className="text-xs text-slate-500">Display name uses <span className="font-semibold">preferredName</span> + lastName when set. If preferredName is blank, uses firstName + lastName. Map firstName → "First Name" field.</p>
+            </div>
+
+            <div>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Sample header row</p>
+              <div className="bg-slate-900 text-green-300 rounded-xl p-3 text-[10px] font-mono overflow-x-auto whitespace-nowrap">
+                firstName,lastName,preferredName,bunk,unit,grade,campSection,camp,campDivision,code,transportationType,busRoute,beforeCare,afterCare,hasAllergies,allergyDetails,hasNotes,lunchInfo,defaultMorningArrival,defaultAfternoonDismissal,photoUrl,period1Group,period2Group,period3Group,period4Group,period5Group,period6Group
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Sample data row</p>
+              <div className="bg-slate-900 text-green-300 rounded-xl p-3 text-[10px] font-mono overflow-x-auto whitespace-nowrap">
+                Jacob,Cohen,Jake,L1,Lower,1,Lower,Kaleidoscope,Lower Division,123,Bus,Bus 2,No,Yes,Yes,Peanut allergy,Yes,,Bus,AfterCare,,,,,,,
+              </div>
+            </div>
+
+          </div>
+        )}
+      </div>
+
+      {/* ── Upload Flow ── */}
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-100">
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Upload Camper CSV</p>
         </div>
-      )}
 
-      {step === "map" && (
-        <div className="space-y-4">
-          <div className="bg-white rounded-2xl border border-slate-200 p-4">
-            <p className="text-sm font-semibold text-slate-700 mb-1">
-              {csvData.rows.length} rows found · {csvData.headers.length} columns
-            </p>
-            <p className="text-xs text-slate-400">Map your CSV columns to camper fields</p>
+        {/* Step: Pick */}
+        {step === "pick" && (
+          <div className="p-6 text-center space-y-4">
+            <div className="w-14 h-14 rounded-full bg-slate-100 flex items-center justify-center mx-auto">
+              <ArrowRight size={24} className="text-slate-400 -rotate-90" />
+            </div>
+            <div>
+              <p className="text-slate-700 font-medium">Choose a CSV file to upload</p>
+              <p className="text-xs text-slate-400 mt-1">Required: firstName, bunk, code</p>
+            </div>
+            <label className="inline-block cursor-pointer">
+              <span className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white rounded-xl active:opacity-80"
+                style={{ backgroundColor: "#023B64" }}>
+                Choose CSV File
+              </span>
+              <input type="file" accept=".csv" onChange={handleFile} className="hidden" />
+            </label>
           </div>
+        )}
 
-          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+        {/* Step: Map */}
+        {step === "map" && (
+          <div className="divide-y divide-slate-100">
+            <div className="px-4 py-3 bg-slate-50">
+              <p className="text-sm font-semibold text-slate-700">{csvData.rows.length} rows · {csvData.headers.length} columns detected</p>
+              <p className="text-xs text-slate-400 mt-0.5">Map your CSV columns to camper fields, then preview</p>
+            </div>
             {CAMPER_FIELDS.map(field => (
-              <div key={field.key} className="flex items-center gap-3 px-4 py-3 border-b border-slate-100 last:border-b-0">
+              <div key={field.key} className="flex items-center gap-3 px-4 py-3">
                 <div className="flex-1 min-w-0">
                   <span className="text-sm font-medium text-slate-900">{field.label}</span>
                   {field.required && <span className="text-red-500 text-xs ml-1">*</span>}
+                  {field.boolean && <span className="text-slate-400 text-xs ml-1">bool</span>}
                 </div>
                 <select value={mapping[field.key] ?? ""}
                   onChange={e => setMapping({ ...mapping, [field.key]: e.target.value })}
-                  className="text-sm border border-slate-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none max-w-[160px]">
+                  className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none max-w-[150px]">
                   <option value="">— skip —</option>
                   {csvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
                 </select>
               </div>
             ))}
-          </div>
-
-          <div className="bg-white rounded-2xl border border-slate-200 p-4">
-            <p className="text-xs font-semibold text-slate-500 mb-2">Preview (first 3 rows)</p>
-            <div className="space-y-2">
-              {csvData.rows.slice(0, 3).map((row, i) => (
-                <div key={i} className="text-xs text-slate-600 bg-slate-50 rounded-lg p-2">
-                  <span className="font-semibold">{row[mapping.name] || "—"}</span>
-                  {mapping.lastName && <span> {row[mapping.lastName]}</span>}
-                  {" · "}
-                  <span>Bunk: {row[mapping.bunk] || "—"}</span>
-                  {" · "}
-                  <span>Code: {row[mapping.code] || "—"}</span>
-                </div>
-              ))}
+            <div className="p-4 flex gap-3">
+              <button onClick={() => setStep("pick")}
+                className="flex-1 py-3 text-sm font-semibold text-slate-500 bg-slate-100 rounded-xl active:bg-slate-200">
+                Back
+              </button>
+              <button onClick={goToPreview} disabled={!requiredMapped}
+                className="flex-1 py-3 text-sm font-bold text-white rounded-xl disabled:opacity-40"
+                style={{ backgroundColor: "#023B64" }}>
+                Preview →
+              </button>
             </div>
           </div>
+        )}
 
-          <div className="flex gap-3">
-            <button onClick={() => setStep("pick")}
-              className="flex-1 py-3 text-sm font-semibold text-slate-500 bg-slate-100 rounded-xl active:bg-slate-200">
-              Back
-            </button>
-            <button onClick={handleUpload} disabled={!requiredMapped || uploading}
-              className="flex-1 py-3 text-sm font-bold text-white rounded-xl active:opacity-80 disabled:opacity-50"
+        {/* Step: Preview */}
+        {step === "preview" && (
+          <div className="space-y-0 divide-y divide-slate-100">
+            <div className="px-4 py-3 bg-slate-50">
+              <p className="text-sm font-semibold text-slate-700">Preview · first 5 rows</p>
+              <p className="text-xs text-slate-400 mt-0.5">{csvData.rows.length} total rows to import</p>
+            </div>
+
+            {/* Preview rows */}
+            {csvData.rows.slice(0, 5).map((row, i) => {
+              const first  = row[mapping.name]?.trim() || "—";
+              const last   = mapping.lastName ? row[mapping.lastName]?.trim() : "";
+              const pref   = mapping.preferredName ? row[mapping.preferredName]?.trim() : "";
+              const bunk   = row[mapping.bunk]?.trim() || "—";
+              const code   = row[mapping.code]?.trim() || "—";
+              const transport = mapping.transportationType ? row[mapping.transportationType]?.trim() : "";
+              return (
+                <div key={i} className="px-4 py-3">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-xs text-slate-400 w-5 flex-shrink-0">#{i + 2}</span>
+                    <span className="font-semibold text-slate-900 text-sm">{pref || first}{last ? ` ${last}` : ""}</span>
+                    {pref && first !== pref && <span className="text-xs text-slate-400">({first})</span>}
+                  </div>
+                  <div className="flex gap-2 mt-1 ml-7 flex-wrap">
+                    <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">{bunk}</span>
+                    <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-mono">#{code}</span>
+                    {transport && <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">{transport}</span>}
+                  </div>
+                </div>
+              );
+            })}
+            {csvData.rows.length > 5 && (
+              <div className="px-4 py-3 text-xs text-slate-400">
+                …and {csvData.rows.length - 5} more rows
+              </div>
+            )}
+
+            {/* Warnings */}
+            {warnings.length > 0 && (
+              <div className="px-4 py-4 bg-amber-50 space-y-2">
+                <p className="text-xs font-bold text-amber-700 flex items-center gap-1.5">
+                  <AlertTriangle size={13} /> {warnings.length} warning{warnings.length !== 1 ? "s" : ""} — review before importing
+                </p>
+                <div className="space-y-1 max-h-32 overflow-y-auto">
+                  {warnings.map((w, i) => (
+                    <p key={i} className="text-xs text-amber-700">{w}</p>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="p-4 flex gap-3">
+              <button onClick={() => setStep("map")}
+                className="flex-1 py-3 text-sm font-semibold text-slate-500 bg-slate-100 rounded-xl active:bg-slate-200">
+                Back
+              </button>
+              <button onClick={handleUpload} disabled={uploading}
+                className="flex-1 py-3 text-sm font-bold text-white rounded-xl disabled:opacity-50 active:opacity-80"
+                style={{ backgroundColor: "#023B64" }}>
+                {uploading ? "Importing…" : `Import ${csvData.rows.length} Campers`}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step: Done */}
+        {step === "done" && (
+          <div className="p-6 space-y-4">
+            <div className="text-center">
+              <CheckCircle2 size={40} className="text-green-500 mx-auto mb-3" />
+              <p className="text-lg font-bold text-slate-900">Imported {result.added} camper{result.added !== 1 ? "s" : ""}</p>
+              {result.skipped > 0 && <p className="text-sm text-slate-500 mt-0.5">Skipped {result.skipped} rows</p>}
+              {warnings.length > 0 && <p className="text-sm text-amber-600 mt-0.5">Warnings: {warnings.length}</p>}
+            </div>
+            {result.errors.length > 0 && (
+              <div className="bg-red-50 rounded-xl p-3 max-h-40 overflow-y-auto space-y-0.5">
+                {result.errors.map((err, i) => (
+                  <p key={i} className="text-xs text-red-600">{err}</p>
+                ))}
+              </div>
+            )}
+            <button onClick={() => { setStep("pick"); setCsvData({ headers: [], rows: [] }); setMapping({}); setWarnings([]); }}
+              className="w-full py-3 text-sm font-bold text-white rounded-xl active:opacity-80"
               style={{ backgroundColor: "#023B64" }}>
-              {uploading ? "Uploading…" : `Upload ${csvData.rows.length} Campers`}
+              Upload Another File
             </button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {step === "done" && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
-          <div className="text-center">
-            <CheckCircle2 size={40} className="text-green-500 mx-auto mb-3" />
-            <p className="text-lg font-bold text-slate-900">{result.added} campers uploaded</p>
-            {result.errors.length > 0 && (
-              <p className="text-sm text-red-500 mt-1">{result.errors.length} errors</p>
+      {/* ── Clear Camper Data Modal ── */}
+      {showClear && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { if (!clearing) { setShowClear(false); setClearText(""); setClearSuccess(false); }}} />
+          <div className="relative bg-white rounded-3xl w-full max-w-sm shadow-2xl overflow-hidden">
+
+            {clearSuccess ? (
+              <div className="p-8 text-center space-y-4">
+                <CheckCircle2 size={44} className="text-green-500 mx-auto" />
+                <p className="font-bold text-slate-900 text-lg">All camper data cleared</p>
+                <p className="text-sm text-slate-500">You can now upload a new camper CSV file.</p>
+                <button onClick={() => { setShowClear(false); setClearSuccess(false); }}
+                  className="w-full py-3 text-sm font-bold text-white rounded-xl"
+                  style={{ backgroundColor: "#023B64" }}>
+                  Done
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="p-6 space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center flex-shrink-0">
+                      <AlertTriangle size={20} className="text-red-600" />
+                    </div>
+                    <div>
+                      <p className="font-bold text-slate-900">Clear All Camper Data</p>
+                      <p className="text-xs text-slate-500 mt-0.5">This cannot be undone</p>
+                    </div>
+                  </div>
+
+                  <p className="text-sm text-slate-700 leading-relaxed">
+                    You are about to delete <span className="font-bold">all camper data</span>. This should only be done before uploading a new weekly camper file. Staff accounts will not be deleted. <span className="font-semibold text-red-600">This cannot be undone unless you exported a backup first.</span>
+                  </p>
+
+                  {/* Export reminder */}
+                  <button onClick={handleExport} disabled={!allCampers?.length}
+                    className="w-full flex items-center gap-2 justify-center py-2.5 border border-blue-200 rounded-xl text-sm font-semibold text-blue-700 bg-blue-50 active:bg-blue-100 disabled:opacity-40">
+                    <ArrowRight size={15} className="-rotate-90" /> Export Today's Data First
+                  </button>
+
+                  <div className="space-y-1.5">
+                    <p className="text-xs font-semibold text-slate-500">
+                      Type <span className="font-mono font-bold text-red-600">DELETE CAMPERS</span> to confirm
+                    </p>
+                    <input
+                      value={clearText}
+                      onChange={e => setClearText(e.target.value)}
+                      placeholder="DELETE CAMPERS"
+                      className="w-full border-2 border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono focus:outline-none focus:border-red-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex border-t border-slate-100">
+                  <button onClick={() => { setShowClear(false); setClearText(""); }}
+                    className="flex-1 py-3.5 text-sm font-semibold text-slate-500 active:bg-slate-50">
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleClear}
+                    disabled={clearText !== "DELETE CAMPERS" || clearing}
+                    className="flex-1 py-3.5 text-sm font-bold text-white disabled:opacity-40 active:opacity-80"
+                    style={{ backgroundColor: "#DC2626" }}>
+                    {clearing ? "Deleting…" : "Delete All Campers"}
+                  </button>
+                </div>
+              </>
             )}
           </div>
-          {result.errors.length > 0 && (
-            <div className="bg-red-50 rounded-xl p-3 max-h-40 overflow-y-auto">
-              {result.errors.map((err, i) => (
-                <p key={i} className="text-xs text-red-600">{err}</p>
-              ))}
-            </div>
-          )}
-          <button onClick={() => { setStep("pick"); setCsvData({ headers: [], rows: [] }); setMapping({}); }}
-            className="w-full py-3 text-sm font-bold text-white rounded-xl active:opacity-80"
-            style={{ backgroundColor: "#023B64" }}>
-            Upload Another
-          </button>
         </div>
       )}
     </div>
