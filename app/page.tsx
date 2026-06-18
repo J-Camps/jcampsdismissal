@@ -859,31 +859,33 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName, isAdm
           <div className="w-10 h-1 bg-slate-200 rounded-full" />
         </div>
 
-        {/* Photo / avatar hero */}
-        <div className="relative flex-shrink-0 mx-4 rounded-2xl overflow-hidden" style={{ height: 220 }}>
-          {camper.photoUrl ? (
-            <img src={camper.photoUrl} alt={displayName}
-              className="w-full h-full object-cover object-top" />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center" style={{ backgroundColor: bg }}>
-              <span className="text-[96px] font-black leading-none select-none"
-                style={{ color: "rgba(255,255,255,0.88)" }}>
-                {initial}
-              </span>
-            </div>
-          )}
-          {/* Gradient overlay */}
-          <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/70 to-transparent pointer-events-none" />
-          {/* Name overlay */}
-          <div className="absolute bottom-4 left-4 right-12">
-            <p className="text-white font-bold text-2xl leading-tight drop-shadow-md">{displayName}</p>
-            <p className="text-white/75 text-sm mt-0.5">
+        {/* Header row: avatar + name */}
+        <div className="flex items-center gap-4 px-4 pb-4 flex-shrink-0">
+          {/* Avatar */}
+          <div className="w-20 h-20 rounded-2xl overflow-hidden flex-shrink-0 shadow-sm"
+            style={{ backgroundColor: bg }}>
+            {camper.photoUrl ? (
+              <img src={camper.photoUrl} alt={displayName}
+                className="w-full h-full object-cover object-top" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <span className="text-4xl font-black leading-none select-none"
+                  style={{ color: "rgba(255,255,255,0.88)" }}>
+                  {initial}
+                </span>
+              </div>
+            )}
+          </div>
+          {/* Name + bunk */}
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-2xl leading-tight text-slate-900 truncate">{displayName}</p>
+            <p className="text-slate-400 text-sm mt-0.5">
               {camper.bunk}{camper.unit ? ` · ${camper.unit}` : ""}
             </p>
           </div>
           {/* Close */}
           <button onClick={onClose}
-            className="absolute top-3 right-3 w-9 h-9 bg-black/40 rounded-full flex items-center justify-center text-white active:bg-black/60 backdrop-blur-sm">
+            className="w-9 h-9 bg-slate-100 rounded-full flex items-center justify-center text-slate-500 active:bg-slate-200 flex-shrink-0">
             <X size={18} />
           </button>
         </div>
