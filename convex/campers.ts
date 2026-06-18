@@ -324,14 +324,7 @@ export const confirmWithBunk = mutation({
     const camper = await ctx.db.get(id);
     if (!camper) return;
 
-    const patch: Record<string, unknown> = { bunkConfirmed: true, arrivalStatus: "Arrived" };
-
-    // Auto-handoff: if camper came from Before Care, mark them as sent-to-bunk there too.
-    if (camper.dailyCheckpoints?.BeforeCare && !camper.dailyCheckpointsOut?.BeforeCare) {
-      patch.dailyCheckpointsOut = { ...(camper.dailyCheckpointsOut ?? {}), BeforeCare: true };
-    }
-
-    await ctx.db.patch(id, patch);
+    await ctx.db.patch(id, { bunkConfirmed: true, leftEarly: undefined, arrivalStatus: "Arrived" });
     await ctx.db.insert("attendanceLogs", {
       camperId: id,
       date: today(),
@@ -346,7 +339,7 @@ export const confirmWithBunk = mutation({
 export const unconfirmWithBunk = mutation({
   args: { id: v.id("campers") },
   handler: async (ctx, { id }) => {
-    await ctx.db.patch(id, { bunkConfirmed: false });
+    await ctx.db.patch(id, { bunkConfirmed: undefined, leftEarly: undefined, tLeftEarly: undefined });
   },
 });
 
@@ -386,30 +379,12 @@ export const markLeftEarly = mutation({
     const camper = await ctx.db.get(id);
     if (!camper) return;
 
-    const patch: Record<string, unknown> = { leftEarly: true, tLeftEarly: Date.now() };
-
-    // Auto-handoff: when bunk marks a camper out, auto-check them into their next location.
-    const dismissal = camper.dailyDismissalOverride ?? camper.transportationType;
-    const goesToAC  = camper.afterCare || dismissal === "AfterCare";
-    const goesToBus = !goesToAC && dismissal === "Bus";
-
-    if (goesToAC && !camper.dailyCheckpoints?.AfterCare) {
-      // Arrive at After Care automatically
-      patch.dailyCheckpoints = { ...(camper.dailyCheckpoints ?? {}), AfterCare: true };
-    }
-    if (goesToBus && !camper.dailyCheckpoints?.Bus) {
-      // Arrive at Bus Room automatically
-      patch.dailyCheckpoints = { ...(camper.dailyCheckpoints ?? {}), Bus: true };
-    }
-
-    await ctx.db.patch(id, patch);
+    await ctx.db.patch(id, { leftEarly: true, tLeftEarly: Date.now() });
     await ctx.db.insert("attendanceLogs", {
       camperId: id,
       date: today(),
       checkpoint: "LeftEarly",
-      status: goesToAC ? "Left bunk → auto-checked into After Care"
-             : goesToBus ? "Left bunk → auto-checked into Bus Room"
-             : "Left bunk",
+      status: "Left bunk",
       staffName,
       timestamp: Date.now(),
     });
@@ -420,7 +395,7 @@ export const markLeftEarly = mutation({
 export const undoLeftEarly = mutation({
   args: { id: v.id("campers") },
   handler: async (ctx, { id }) => {
-    await ctx.db.patch(id, { leftEarly: false, tLeftEarly: undefined });
+    await ctx.db.patch(id, { leftEarly: undefined, tLeftEarly: undefined });
   },
 });
 
@@ -580,22 +555,6 @@ export const setCheckpoint = mutation({
     // Turning "in" off also clears "out" — can't be checked out without checking in.
     if (!value && camper.dailyCheckpointsOut?.[checkpoint]) {
       patch.dailyCheckpointsOut = { ...camper.dailyCheckpointsOut, [checkpoint]: false };
-    }
-
-    // Auto-handoff cascades (checking INTO a location confirms departure from the prior one):
-    // AC In confirmed → also mark bunk as "out" if not already
-    if (checkpoint === "AfterCare" && value && !camper.leftEarly) {
-      patch.leftEarly   = true;
-      patch.tLeftEarly  = Date.now();
-    }
-    // Bus In confirmed → also mark bunk as "out" if not already
-    if (checkpoint === "Bus" && value && !camper.leftEarly) {
-      patch.leftEarly   = true;
-      patch.tLeftEarly  = Date.now();
-    }
-    // BC In confirmed → mark as on campus (arrivalStatus Arrived)
-    if (checkpoint === "BeforeCare" && value && !camper.arrivalStatus) {
-      patch.arrivalStatus = "Arrived";
     }
 
     await ctx.db.patch(id, patch);
