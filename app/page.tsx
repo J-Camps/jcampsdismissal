@@ -2586,13 +2586,36 @@ function StaffManagement() {
 
 type CsvRow = Record<string, string>;
 
+function parseCsvLine(line: string): string[] {
+  const fields: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else inQuotes = false;
+      } else {
+        cur += ch;
+      }
+    } else {
+      if (ch === '"') { inQuotes = true; }
+      else if (ch === ',') { fields.push(cur.trim()); cur = ""; }
+      else { cur += ch; }
+    }
+  }
+  fields.push(cur.trim());
+  return fields;
+}
+
 function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
   const lines = text.split(/\r?\n/).filter(l => l.trim());
   if (lines.length === 0) return { headers: [], rows: [] };
-  const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, ""));
+  const headers = parseCsvLine(lines[0]).map(h => h.replace(/^"|"$/g, "").trim());
   const rows: CsvRow[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const vals = lines[i].split(",").map(v => v.trim().replace(/^"|"$/g, ""));
+    const vals = parseCsvLine(lines[i]);
     const row: CsvRow = {};
     headers.forEach((h, j) => { row[h] = vals[j] ?? ""; });
     rows.push(row);
@@ -2732,12 +2755,15 @@ function CamperUpload() {
     reader.onload = (ev) => {
       const parsed = parseCsv(ev.target?.result as string);
       setCsvData(parsed);
+      const PHOTO_ALIASES = ["photo", "camperphoto", "camperpicture", "picture", "headshot", "photourl", "photo url", "camper photo"];
       const autoMap: Record<string, string> = {};
       for (const field of CAMPER_FIELDS) {
-        const match = parsed.headers.find(h =>
-          h.toLowerCase().replace(/[^a-z0-9]/g, "") === field.key.toLowerCase().replace(/[^a-z0-9]/g, "")
-          || h.toLowerCase().replace(/[^a-z]/g, "").includes(field.label.toLowerCase().replace(/[^a-z]/g, ""))
-        );
+        const match = parsed.headers.find(h => {
+          const norm = h.toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (field.key === "photoUrl") return PHOTO_ALIASES.includes(norm) || PHOTO_ALIASES.includes(h.toLowerCase().trim());
+          return norm === field.key.toLowerCase().replace(/[^a-z0-9]/g, "")
+            || h.toLowerCase().replace(/[^a-z]/g, "").includes(field.label.toLowerCase().replace(/[^a-z]/g, ""));
+        });
         if (match) autoMap[field.key] = match;
       }
       setMapping(autoMap);
