@@ -3582,7 +3582,7 @@ function CamperUpload() {
     const csv  = [EXPORT_COLUMNS.join(","), ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url  = URL.createObjectURL(blob);
-    const a    = Object.assign(document.createElement("a"), { href: url, download: `jcamp-attendance-export-${dateStr}.csv` });
+    const a    = Object.assign(document.createElement("a"), { href: url, download: `jcamps-attendance-export-${dateStr}.csv` });
     a.click();
     URL.revokeObjectURL(url);
   };
