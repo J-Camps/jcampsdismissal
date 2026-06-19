@@ -17,7 +17,7 @@ import {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const RUNNERS = ["Runner 1", "Runner 2", "Runner 3", "Runner 4"];
+const RUNNERS_FALLBACK = ["Runner 1", "Runner 2", "Runner 3", "Runner 4"];
 const BUS_ROUTES = ["Bus 1", "Bus 2", "Bus 3", "Bus 4", "Bus 5", "Bus 6"];
 const STATUSES = ["Waiting", "Called", "Assigned", "Picked Up", "Dismissed"] as const;
 
@@ -304,7 +304,7 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
   const [extSub,   setExtSub]   = useState<ExtDaySub>("beforecare");
 
   const sections: { id: AdminSection; label: string; icon: React.ReactNode }[] = [
-    { id: "campers",   label: "Campers",    icon: <Users size={18} /> },
+    { id: "campers",   label: "Dashboard",  icon: <Users size={18} /> },
     { id: "transport", label: "Transport",  icon: <Car size={18} /> },
     { id: "extday",    label: "Ext. Day",   icon: <Clock size={18} /> },
     { id: "bunk",      label: "Bunk",       icon: <BookOpen size={18} /> },
@@ -580,16 +580,41 @@ function CamperDashboardRow({ row, onClick }: { row: CamperRow; onClick: () => v
   );
 }
 
+// Hierarchy grouping options for the Dashboard
+type DashGroupBy = "camp" | "bunk" | "grade";
+const DASH_GROUP_OPTIONS: { id: DashGroupBy; label: string }[] = [
+  { id: "camp",  label: "Camp → Group" },
+  { id: "bunk",  label: "Group" },
+  { id: "grade", label: "Grade" },
+];
+
+function groupKeysFor(c: CamperDoc, groupBy: DashGroupBy): [string, string] {
+  // Returns [topLevelKey, subLevelKey]
+  const camp  = c.camp?.trim() || "Unassigned Camp";
+  const bunk  = c.bunk?.trim() || "No Group";
+  const grade = c.grade?.trim() || "No Grade";
+  switch (groupBy) {
+    case "camp":  return [camp, bunk];
+    case "bunk":  return [bunk, ""];
+    case "grade": return [grade, bunk];
+  }
+}
+
+function countsFor(rows: CamperRow[]) {
+  const here    = rows.filter(r => r.campusStatus === "Here").length;
+  const notHere = rows.length - here;
+  return { total: rows.length, here, notHere };
+}
+
 function CamperDashboard({ staff }: { staff: StaffDoc }) {
   const campers = useQuery(api.campers.list);
 
-  const [search,          setSearch]          = useState("");
-  const [statusFilter,    setStatusFilter]    = useState<"all" | "Here" | "NotHere">("all");
-  const [showFilters,     setShowFilters]     = useState(false);
-  const [bunkFilter,      setBunkFilter]      = useState("");
-  const [unitFilter,      setUnitFilter]      = useState("");
-  const [transportFilter, setTransportFilter] = useState("");
-  const [selectedCamper,  setSelectedCamper]  = useState<CamperDoc | null>(null);
+  const [search,         setSearch]         = useState("");
+  const [statusFilter,   setStatusFilter]   = useState<"all" | "Here" | "NotHere">("all");
+  const [groupBy,        setGroupBy]        = useState<DashGroupBy>("camp");
+  const [expandedTop,    setExpandedTop]    = useState<Set<string>>(new Set());
+  const [expandedSub,    setExpandedSub]    = useState<Set<string>>(new Set());
+  const [selectedCamper, setSelectedCamper] = useState<CamperDoc | null>(null);
 
   if (campers === undefined) return <Loading />;
 
@@ -604,9 +629,6 @@ function CamperDashboard({ staff }: { staff: StaffDoc }) {
   const q = search.toLowerCase().trim();
   const filtered = rows.filter(r => {
     if (statusFilter !== "all" && r.campusStatus !== statusFilter) return false;
-    if (bunkFilter      && r.camper.bunk !== bunkFilter) return false;
-    if (unitFilter      && r.camper.unit !== unitFilter) return false;
-    if (transportFilter && (r.camper.transportationType ?? "") !== transportFilter) return false;
     if (q) {
       const name = `${r.camper.preferredName ?? r.camper.name} ${r.camper.lastName ?? ""}`.toLowerCase();
       if (!name.includes(q) && !String(r.camper.code).includes(q)) return false;
@@ -614,11 +636,39 @@ function CamperDashboard({ staff }: { staff: StaffDoc }) {
     return true;
   });
 
-  const bunks = [...new Set(campers.map(c => c.bunk).filter(Boolean))].sort() as string[];
-  const units = [...new Set(campers.map(c => c.unit).filter(Boolean))].sort() as string[];
+  // When actively searching/filtering, auto-expand everything so matches are visible.
+  const autoExpand = q.length > 0 || statusFilter !== "all";
+
+  // Build hierarchy: top → sub → rows
+  const hasSubLevel = groupBy !== "bunk";
+  const hierarchy = new Map<string, Map<string, CamperRow[]>>();
+  for (const r of filtered) {
+    const [top, sub] = groupKeysFor(r.camper, groupBy);
+    if (!hierarchy.has(top)) hierarchy.set(top, new Map());
+    const subMap = hierarchy.get(top)!;
+    const subKey = hasSubLevel ? sub : "";
+    if (!subMap.has(subKey)) subMap.set(subKey, []);
+    subMap.get(subKey)!.push(r);
+  }
+  const topKeys = [...hierarchy.keys()].sort((a, b) => a.localeCompare(b));
 
   const toggleStatus = (s: "Here" | "NotHere") =>
     setStatusFilter(prev => prev === s ? "all" : s);
+  const toggleTop = (k: string) =>
+    setExpandedTop(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const toggleSub = (k: string) =>
+    setExpandedSub(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
+
+  const expandAll = () => {
+    const tops = new Set<string>();
+    const subs = new Set<string>();
+    for (const [top, subMap] of hierarchy) {
+      tops.add(top);
+      for (const sub of subMap.keys()) subs.add(`${top}//${sub}`);
+    }
+    setExpandedTop(tops); setExpandedSub(subs);
+  };
+  const collapseAll = () => { setExpandedTop(new Set()); setExpandedSub(new Set()); };
 
   return (
     <div className="space-y-4">
@@ -651,56 +701,32 @@ function CamperDashboard({ staff }: { staff: StaffDoc }) {
         </p>
       </div>
 
-      {/* Search + Filters */}
-      <div className="space-y-2">
-        <div className="flex gap-2">
-          <div className="flex-1 relative">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-            <input value={search} onChange={e => setSearch(e.target.value)}
-              placeholder="Search by name or code…"
-              className="w-full pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#5B8C9D]" />
-          </div>
-          <button onClick={() => setShowFilters(f => !f)}
-            className={`px-3.5 py-2.5 rounded-xl text-sm font-semibold border transition-colors ${showFilters ? "border-[#023B64] text-[#023B64] bg-white" : "bg-white border-slate-200 text-slate-600"}`}>
-            {(bunkFilter || unitFilter || transportFilter) ? "Filters ●" : "Filters"}
-          </button>
-        </div>
+      {/* Search */}
+      <div className="relative">
+        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+        <input value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="Search by name or code…"
+          className="w-full pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-[#5B8C9D]" />
+      </div>
 
-        {showFilters && (
-          <div className="bg-white border border-slate-200 rounded-2xl p-3 space-y-2">
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <p className="text-[11px] text-slate-500 font-medium mb-1">Bunk</p>
-                <select value={bunkFilter} onChange={e => setBunkFilter(e.target.value)}
-                  className="w-full text-sm border border-slate-200 rounded-xl px-2.5 py-2 bg-white focus:outline-none">
-                  <option value="">All Bunks</option>
-                  {bunks.map((b, i) => <option key={b || i} value={b}>{b}</option>)}
-                </select>
-              </div>
-              <div>
-                <p className="text-[11px] text-slate-500 font-medium mb-1">Unit</p>
-                <select value={unitFilter} onChange={e => setUnitFilter(e.target.value)}
-                  className="w-full text-sm border border-slate-200 rounded-xl px-2.5 py-2 bg-white focus:outline-none">
-                  <option value="">All Units</option>
-                  {units.map((u, i) => <option key={u || i} value={u}>{u}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <p className="text-[11px] text-slate-500 font-medium mb-1">Transportation</p>
-              <select value={transportFilter} onChange={e => setTransportFilter(e.target.value)}
-                className="w-full text-sm border border-slate-200 rounded-xl px-2.5 py-2 bg-white focus:outline-none">
-                <option value="">All</option>
-                <option value="Carline">Carline</option>
-                <option value="Bus">Bus</option>
-                <option value="AfterCare">After Care</option>
-                <option value="WalkUp">Walk-Up</option>
-              </select>
-            </div>
-            {(bunkFilter || unitFilter || transportFilter) && (
-              <button onClick={() => { setBunkFilter(""); setUnitFilter(""); setTransportFilter(""); }}
-                className="text-xs text-slate-400 underline">Clear filters</button>
-            )}
+      {/* Group-by control + expand/collapse */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Group by</span>
+        <div className="flex gap-1 bg-white border border-slate-200 rounded-xl p-0.5">
+          {DASH_GROUP_OPTIONS.map(opt => (
+            <button key={opt.id} onClick={() => setGroupBy(opt.id)}
+              className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors ${
+                groupBy === opt.id ? "text-white" : "text-slate-500"
+              }`}
+              style={groupBy === opt.id ? { backgroundColor: "#023B64" } : undefined}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        {!autoExpand && (
+          <div className="ml-auto flex gap-2">
+            <button onClick={expandAll} className="text-xs text-slate-500 font-medium underline">Expand all</button>
+            <button onClick={collapseAll} className="text-xs text-slate-500 font-medium underline">Collapse all</button>
           </div>
         )}
       </div>
@@ -718,16 +744,74 @@ function CamperDashboard({ staff }: { staff: StaffDoc }) {
 
       <p className="text-xs text-slate-400">{filtered.length} of {campers.length} campers</p>
 
-      {/* List */}
-      <div className="space-y-2">
-        {filtered.length === 0 && (
+      {/* Hierarchy accordions */}
+      <div className="space-y-2.5">
+        {topKeys.length === 0 && (
           <div className="bg-white border border-slate-200 rounded-2xl px-4 py-10 text-center text-slate-400 text-sm">
             No campers match your filters.
           </div>
         )}
-        {filtered.map(row => (
-          <CamperDashboardRow key={row.camper._id} row={row} onClick={() => setSelectedCamper(row.camper)} />
-        ))}
+        {topKeys.map(top => {
+          const subMap = hierarchy.get(top)!;
+          const allRows = [...subMap.values()].flat();
+          const c = countsFor(allRows);
+          const topOpen = autoExpand || expandedTop.has(top);
+          const subKeys = [...subMap.keys()].sort((a, b) => a.localeCompare(b));
+          return (
+            <div key={top} className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              {/* Top-level folder header */}
+              <button onClick={() => toggleTop(top)}
+                className="w-full flex items-center gap-2.5 px-4 py-3.5 text-left active:bg-slate-50">
+                {topOpen ? <ChevronDown size={18} className="text-slate-400 flex-shrink-0" />
+                         : <ChevronRight size={18} className="text-slate-400 flex-shrink-0" />}
+                <span className="font-bold text-slate-800 flex-1 min-w-0 truncate">{top}</span>
+                <span className="text-xs font-semibold text-green-600">{c.here} here</span>
+                <span className="text-xs text-slate-400">·</span>
+                <span className="text-xs font-semibold text-slate-400">{c.total} total</span>
+              </button>
+
+              {topOpen && (
+                <div className="border-t border-slate-100">
+                  {!hasSubLevel
+                    ? (
+                      // No sub-level: list rows directly
+                      <div className="p-2.5 space-y-2 bg-slate-50/50">
+                        {allRows.map(row => (
+                          <CamperDashboardRow key={row.camper._id} row={row} onClick={() => setSelectedCamper(row.camper)} />
+                        ))}
+                      </div>
+                    )
+                    : subKeys.map(sub => {
+                      const subRows = subMap.get(sub)!;
+                      const sc = countsFor(subRows);
+                      const subId = `${top}//${sub}`;
+                      const subOpen = autoExpand || expandedSub.has(subId);
+                      return (
+                        <div key={subId} className="border-b border-slate-100 last:border-b-0">
+                          <button onClick={() => toggleSub(subId)}
+                            className="w-full flex items-center gap-2 pl-9 pr-4 py-2.5 text-left active:bg-slate-50">
+                            {subOpen ? <ChevronDown size={15} className="text-slate-300 flex-shrink-0" />
+                                     : <ChevronRight size={15} className="text-slate-300 flex-shrink-0" />}
+                            <span className="text-sm font-semibold text-slate-600 flex-1 min-w-0 truncate">{sub}</span>
+                            <span className="text-[11px] font-semibold text-green-600">{sc.here}</span>
+                            <span className="text-[11px] text-slate-300">/</span>
+                            <span className="text-[11px] font-semibold text-slate-400">{sc.total}</span>
+                          </button>
+                          {subOpen && (
+                            <div className="px-2.5 pb-2.5 space-y-2 bg-slate-50/50">
+                              {subRows.map(row => (
+                                <CamperDashboardRow key={row.camper._id} row={row} onClick={() => setSelectedCamper(row.camper)} />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {selectedCamper && (
@@ -1680,8 +1764,10 @@ function RosterCheckCard({
 
 // ─── Generic In/Out Roster (Before/After Care, Bus sheets) ───────────────────
 
+type DailyOverride = { camperId: string; isAbsent?: boolean; lateDropoffTime?: string; earlyPickupTime?: string; morningArrival?: string; afternoonDismissal?: string; note?: string };
+
 function InOutRosterView({
-  campers, checkpoint, staffName, groupLabel, emptyMessage, inLabel, outLabel,
+  campers, checkpoint, staffName, groupLabel, emptyMessage, inLabel, outLabel, overrides, hideSummary,
 }: {
   campers: CamperDoc[];
   checkpoint: "BeforeCare" | "AfterCare" | "Bus";
@@ -1690,9 +1776,16 @@ function InOutRosterView({
   emptyMessage?: string;
   inLabel: string;   // e.g. "Arrived" / "Boarded"
   outLabel: string;  // e.g. "Left for Bunk" / "Dropped Off"
+  overrides?: DailyOverride[];
+  hideSummary?: boolean;  // when the parent already renders the summary on top
 }) {
   const setCheckpoint = useMutation(api.campers.setCheckpoint);
   const [selected, setSelected] = useState<CamperDoc | null>(null);
+
+  const overrideMap = new Map<string, DailyOverride>();
+  for (const o of overrides ?? []) overrideMap.set(o.camperId, o);
+  const isAbsentToday = (c: CamperDoc) =>
+    overrideMap.get(c._id)?.isAbsent === true || c.arrivalStatus === "Absent";
 
   if (campers.length === 0) {
     return (
@@ -1702,30 +1795,46 @@ function InOutRosterView({
     );
   }
 
-  const notIn = campers.filter(c => !c.dailyCheckpoints?.[checkpoint]);
-  const here  = campers.filter(c => c.dailyCheckpoints?.[checkpoint] && !c.dailyCheckpointsOut?.[checkpoint]);
-  const out   = campers.filter(c => c.dailyCheckpoints?.[checkpoint] && c.dailyCheckpointsOut?.[checkpoint]);
-
-  const toggleIn = (c: CamperDoc) =>
-    setCheckpoint({ id: c._id, checkpoint, value: !c.dailyCheckpoints?.[checkpoint], staffName, label: groupLabel, phase: "in" });
-  const toggleOut = (c: CamperDoc) =>
-    setCheckpoint({ id: c._id, checkpoint, value: !c.dailyCheckpointsOut?.[checkpoint], staffName, label: groupLabel, phase: "out" });
-
   const sorted = [...campers].sort((a, b) => camperName(a).localeCompare(camperName(b)));
+
+  // Counters mirror the bunk view: In / Not In / Out / Absent.
+  const absentCount = sorted.filter(c => isAbsentToday(c)).length;
+  const inCount     = sorted.filter(c => !isAbsentToday(c) && c.dailyCheckpoints?.[checkpoint] && !c.dailyCheckpointsOut?.[checkpoint]).length;
+  const outCount    = sorted.filter(c => !isAbsentToday(c) && c.dailyCheckpoints?.[checkpoint] && c.dailyCheckpointsOut?.[checkpoint]).length;
+  const notInCount  = sorted.filter(c => !isAbsentToday(c) && !c.dailyCheckpoints?.[checkpoint]).length;
+
+  const toggleIn = (c: CamperDoc) => {
+    if (isAbsentToday(c)) return;
+    setCheckpoint({ id: c._id, checkpoint, value: !c.dailyCheckpoints?.[checkpoint], staffName, label: groupLabel, phase: "in" });
+  };
+  const toggleOut = (c: CamperDoc) => {
+    if (isAbsentToday(c)) return;
+    setCheckpoint({ id: c._id, checkpoint, value: !c.dailyCheckpointsOut?.[checkpoint], staffName, label: groupLabel, phase: "out" });
+  };
 
   return (
     <>
       <div className="space-y-4">
-        <div className="flex gap-2">
-          <Pill value={here.length}  label="Here"    color="green" />
-          <Pill value={out.length}   label={outLabel} color="blue" />
-          <Pill value={notIn.length} label="Not Yet" color="slate" />
-        </div>
+        {/* Summary strip — matches bunk attendance */}
+        {!hideSummary && (
+          <>
+            <div className="flex gap-2">
+              <Pill value={inCount}    label="In"     color="green" />
+              <Pill value={notInCount} label="Not In" color="slate" />
+              <Pill value={outCount}   label="Out"    color="blue" />
+              {absentCount > 0 && <Pill value={absentCount} label="Absent" color="amber" />}
+            </div>
+            <p className="text-xs text-slate-500 text-center -mt-1">
+              {sorted.length} enrolled
+            </p>
+          </>
+        )}
 
         <div className="space-y-2">
           {sorted.map(c => (
             <InOutCamperRow key={c._id} camper={c} checkpoint={checkpoint}
-              inLabel={inLabel} outLabel={outLabel}
+              isAbsent={isAbsentToday(c)}
+              override={overrideMap.get(c._id)}
               onOpenProfile={() => setSelected(c)}
               onToggleIn={() => toggleIn(c)}
               onToggleOut={() => toggleOut(c)}
@@ -1739,25 +1848,27 @@ function InOutRosterView({
   );
 }
 
+// Care/Bus roster row — same layout & badges as BunkCamperRow.
 function InOutCamperRow({
-  camper, checkpoint, inLabel, outLabel, onOpenProfile, onToggleIn, onToggleOut,
+  camper, checkpoint, isAbsent, override, onOpenProfile, onToggleIn, onToggleOut,
 }: {
   camper: CamperDoc;
   checkpoint: "BeforeCare" | "AfterCare" | "Bus";
-  inLabel: string;
-  outLabel: string;
+  isAbsent: boolean;
+  override?: DailyOverride;
   onOpenProfile: () => void;
   onToggleIn: () => void;
   onToggleOut: () => void;
 }) {
   const name = camperName(camper);
   const bg = avatarBg(camper.name);
-  const isIn  = !!camper.dailyCheckpoints?.[checkpoint];
-  const isOut = !!camper.dailyCheckpointsOut?.[checkpoint];
+  const arrived = !!camper.dailyCheckpoints?.[checkpoint];
+  const dismissed = !!camper.dailyCheckpointsOut?.[checkpoint];
 
   return (
-    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${isOut ? "border-blue-200" : isIn ? "border-green-200" : "border-slate-200"}`}>
-      <button onClick={onOpenProfile} className="w-full flex items-center gap-3 px-4 py-3.5 text-left active:bg-slate-50">
+    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${isAbsent ? "border-slate-200 opacity-60" : "border-slate-200"}`}>
+      {/* Info area → opens profile */}
+      <button onClick={onOpenProfile} className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-slate-50">
         <div className="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 font-bold text-lg text-white overflow-hidden"
           style={{ backgroundColor: bg }}>
           {camper.photoUrl
@@ -1766,36 +1877,55 @@ function InOutCamperRow({
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="font-semibold text-slate-900 text-base leading-tight">{name}</span>
+            <span className="font-semibold text-slate-900 text-xl leading-tight">{name}</span>
             {camper.hasAllergies && (
-              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-red-100 text-red-700">ALLERGY</span>
+              <span className="text-[10px] font-bold text-red-700 bg-red-100 px-1.5 py-0.5 rounded-full tracking-wide">ALLERGY</span>
+            )}
+            {camper.dismissalMethod && (
+              <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded-full tracking-wide">
+                {camper.dismissalMethod}
+              </span>
+            )}
+            {override?.isAbsent && (
+              <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Absent</span>
+            )}
+            {override?.lateDropoffTime && (
+              <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">Late: {fmtClock(override.lateDropoffTime)}</span>
+            )}
+            {override?.earlyPickupTime && (
+              <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">Early: {fmtClock(override.earlyPickupTime)}</span>
+            )}
+            {override?.afternoonDismissal && (
+              <span className="text-[10px] font-bold text-violet-700 bg-violet-100 px-1.5 py-0.5 rounded-full">Dismissal: {camper.dismissalMethod ?? "?"} → {override.afternoonDismissal}</span>
+            )}
+            {override?.morningArrival && (
+              <span className="text-[10px] font-bold text-green-700 bg-green-100 px-1.5 py-0.5 rounded-full">Arrival: {camper.arrivalMethod ?? "?"} → {override.morningArrival}</span>
+            )}
+            {override?.note && (
+              <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full flex items-center gap-0.5"><StickyNote size={9} />{override.note}</span>
             )}
           </div>
-          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-            <span className="text-xs text-slate-400">{camper.bunk}</span>
-            {camper.busRoute ? (
-              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{camper.busRoute}</span>
-            ) : camper.transportationType ? (
-              <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{TRANSPORT_LABEL[camper.transportationType]}</span>
-            ) : null}
-          </div>
         </div>
+        <ArrowRight size={16} className="text-slate-300 flex-shrink-0" />
       </button>
 
+      {/* Two tap targets: In | Out — same style as bunk */}
       <div className="border-t border-slate-100 flex">
-        <button onClick={onToggleIn}
-          className="flex-1 py-3.5 text-sm font-bold flex items-center justify-center gap-1.5 transition-colors active:opacity-80"
-          style={isIn ? { backgroundColor: "#dcfce7", color: "#15803d" } : { backgroundColor: "#023B64", color: "#fff" }}>
-          {isIn ? <Check size={15} /> : null}
-          {isIn ? "Here" : inLabel}
+        <button onClick={onToggleIn} disabled={isAbsent}
+          className={`flex-1 py-3 text-sm font-bold flex items-center justify-center gap-1.5 border-r border-slate-100 transition-colors ${
+            isAbsent ? "bg-slate-50 text-slate-300 cursor-not-allowed"
+            : arrived ? "bg-green-500 text-white active:bg-green-600"
+            : "bg-white text-slate-500 active:bg-slate-50"
+          }`}>
+          In
         </button>
-        <button onClick={onToggleOut} disabled={!isIn}
-          className="flex-1 py-3.5 text-sm font-bold flex items-center justify-center gap-1.5 transition-colors active:opacity-80 border-l border-slate-100"
-          style={!isIn
-            ? { backgroundColor: "#f1f5f9", color: "#cbd5e1" }
-            : isOut ? { backgroundColor: "#dbeafe", color: "#1d4ed8" } : { backgroundColor: "#5B8C9D", color: "#fff" }}>
-          {isOut ? <Check size={15} /> : null}
-          {outLabel}
+        <button onClick={onToggleOut} disabled={isAbsent || !arrived}
+          className={`flex-1 py-3 text-sm font-bold flex items-center justify-center gap-1.5 transition-colors ${
+            isAbsent || !arrived ? "bg-slate-50 text-slate-300 cursor-not-allowed"
+            : dismissed ? "bg-green-500 text-white active:bg-green-600"
+            : "bg-white text-slate-500 active:bg-slate-50"
+          }`}>
+          Out
         </button>
       </div>
     </div>
@@ -1838,9 +1968,28 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   const activeRoster = normalRoster.filter(c => !removedIds.has(c._id));
   const todayRoster = [...activeRoster, ...addedToday];
 
+  // Summary counts — mirror the bunk attendance strip.
+  const isAbsentToday = (c: CamperDoc) =>
+    overrideMap.get(c._id)?.isAbsent === true || c.arrivalStatus === "Absent";
+  const absentCount = todayRoster.filter(c => isAbsentToday(c)).length;
+  const inCount     = todayRoster.filter(c => !isAbsentToday(c) && c.dailyCheckpoints?.[kind] && !c.dailyCheckpointsOut?.[kind]).length;
+  const outCount    = todayRoster.filter(c => !isAbsentToday(c) && c.dailyCheckpoints?.[kind] && c.dailyCheckpointsOut?.[kind]).length;
+  const notInCount  = todayRoster.filter(c => !isAbsentToday(c) && !c.dailyCheckpoints?.[kind]).length;
+
   return (
     <div className="space-y-4">
       <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{title}</h2>
+
+      {/* Summary strip — same as bunk attendance, on top */}
+      <div className="flex gap-2">
+        <Pill value={inCount}    label="In"     color="green" />
+        <Pill value={notInCount} label="Not In" color="slate" />
+        <Pill value={outCount}   label="Out"    color="blue" />
+        {absentCount > 0 && <Pill value={absentCount} label="Absent" color="amber" />}
+      </div>
+      <p className="text-xs text-slate-500 text-center -mt-1">
+        {todayRoster.length} enrolled
+      </p>
 
       {removedToday.length > 0 && (
         <div className="space-y-2">
@@ -1877,6 +2026,8 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
         outLabel={outLabel}
         groupLabel={title}
         emptyMessage={`No campers expected in ${title} today.`}
+        overrides={overrides ?? []}
+        hideSummary
       />
     </div>
   );
@@ -1966,6 +2117,7 @@ function BusView({ staff }: { staff: StaffDoc }) {
           outLabel="Dropped Off"
           groupLabel={route}
           emptyMessage={`No campers assigned to ${route} today.`}
+          overrides={overrides ?? []}
         />
       )}
     </div>
@@ -2107,10 +2259,18 @@ function Pill({ value, label, color }: { value: number; label: string; color: "g
 function Caller({ source }: { source: "Carline" | "Walk-Up" }) {
   const [entry, setEntry] = useState("");
   const [selected, setSelected] = useState<CamperDoc | null>(null);
+  const [lookupOpen, setLookupOpen] = useState(false);
   const matched    = useQuery(api.campers.getByCode, entry.length === 3 ? { code: entry } : "skip");
   const callByCode = useMutation(api.campers.callByCode);
   const Icon = source === "Carline" ? Car : Footprints;
   const call = async () => { await callByCode({ code: entry, source }); setEntry(""); };
+
+  // When staff recovers a camper via name lookup, drop their family code into the
+  // normal entry field so the standard verify-then-call flow takes over.
+  const recoverCode = (code: string) => {
+    setEntry(String(code).replace(/\D/g, "").slice(0, 3));
+    setLookupOpen(false);
+  };
 
   return (
     <>
@@ -2156,10 +2316,89 @@ function Caller({ source }: { source: "Carline" | "Walk-Up" }) {
               </button>
             </div>
           )}
+
+          {/* Fallback: parent doesn't remember the safety number */}
+          <button onClick={() => setLookupOpen(true)}
+            className="w-full text-center text-sm font-semibold text-[#023B64] mt-4 py-2 active:opacity-70">
+            Forgot Safety Number?
+          </button>
         </div>
       </div>
+
+      {lookupOpen && <SafetyNumberLookup onClose={() => setLookupOpen(false)} onRecover={recoverCode} />}
       {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} />}
     </>
+  );
+}
+
+// Staff-only fallback: search a camper by name to recover the family safety number.
+function SafetyNumberLookup({ onClose, onRecover }: { onClose: () => void; onRecover: (code: string) => void }) {
+  const campers = useQuery(api.campers.list);
+  const [q, setQ] = useState("");
+
+  const query = q.trim().toLowerCase();
+  const results = query.length < 2 ? [] : (campers ?? []).filter(c => {
+    const hay = `${c.preferredName ?? ""} ${c.name ?? ""} ${c.lastName ?? ""}`.toLowerCase();
+    return hay.includes(query);
+  }).slice(0, 25);
+
+  const fullName = (c: CamperDoc) =>
+    c.preferredName
+      ? `${c.preferredName}${c.lastName ? " " + c.lastName : ""}`
+      : c.name;
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end">
+      <div className="backdrop-fade absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="sheet-slide-up relative bg-white rounded-t-3xl flex flex-col max-h-[88dvh] overflow-hidden">
+        <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-slate-100 flex-shrink-0">
+          <div>
+            <h3 className="text-lg font-bold text-slate-900">Safety Number Lookup</h3>
+            <p className="text-xs text-slate-500">Search by camper name to recover the family code</p>
+          </div>
+          <button onClick={onClose} className="w-9 h-9 bg-slate-100 rounded-full flex items-center justify-center active:bg-slate-200">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-4 pt-4 flex-shrink-0">
+          <div className="relative">
+            <Search size={17} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={q} onChange={e => setQ(e.target.value)} autoFocus
+              placeholder="First, preferred, or last name…"
+              className="w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl focus:outline-none text-sm bg-white"
+              onFocus={e => (e.currentTarget.style.borderColor = "#023B64")}
+              onBlur={e => (e.currentTarget.style.borderColor = "")} />
+          </div>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-4 py-4 space-y-2">
+          {campers === undefined && <Loading />}
+          {campers !== undefined && query.length < 2 && (
+            <p className="text-center text-slate-400 text-sm py-8">Type at least 2 letters to search.</p>
+          )}
+          {campers !== undefined && query.length >= 2 && results.length === 0 && (
+            <p className="text-center text-slate-400 text-sm py-8">No campers match “{q}”.</p>
+          )}
+          {results.map(c => (
+            <button key={c._id} onClick={() => onRecover(c.code)}
+              className="w-full flex items-center gap-3 bg-slate-50 active:bg-slate-100 rounded-xl px-4 py-3 text-left">
+              <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 text-white font-bold overflow-hidden"
+                style={{ backgroundColor: avatarBg(c.name) }}>
+                {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : fullName(c).charAt(0).toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-slate-900">{fullName(c)}</p>
+                <p className="text-xs text-slate-500">{c.bunk}{c.grade ? ` · ${c.grade}` : ""}</p>
+              </div>
+              <span className="text-xs font-semibold text-[#023B64] flex items-center gap-1 flex-shrink-0">
+                Use code <ArrowRight size={14} />
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2167,9 +2406,14 @@ function Caller({ source }: { source: "Carline" | "Walk-Up" }) {
 
 function Dispatcher() {
   const active     = useQuery(api.campers.active);
+  const runners    = useQuery(api.staff.getRunners);
   const assign     = useMutation(api.campers.assign);
   const cancelCall = useMutation(api.campers.cancelCall);
   const [selected, setSelected] = useState<CamperDoc | null>(null);
+
+  const runnerNames = runners && runners.length > 0
+    ? runners.map(r => r.runnerLabel ?? r.name)
+    : RUNNERS_FALLBACK;
 
   if (active === undefined) return <Loading />;
 
@@ -2204,7 +2448,7 @@ function Dispatcher() {
                 <StatusBadge status={c.status} />
               </button>
               <div className="border-t border-slate-100 px-3 py-2.5 flex gap-2 flex-wrap items-center">
-                {RUNNERS.map(r => (
+                {runnerNames.map(r => (
                   <button key={r} onClick={() => assign({ id: c._id, runner: r })}
                     className={`px-3.5 py-2 rounded-xl text-sm font-bold transition-colors ${c.runner === r ? "text-white" : "bg-slate-100 text-slate-700 active:bg-slate-200"}`}
                     style={c.runner === r ? { backgroundColor: "#023B64" } : undefined}>
@@ -2351,12 +2595,16 @@ function RunnerView({ runnerName }: { runnerName: string }) {
 }
 
 function RunnerAdminView() {
+  const runners = useQuery(api.staff.getRunners);
+  const runnerNames = runners && runners.length > 0
+    ? runners.map(r => r.runnerLabel ?? r.name)
+    : RUNNERS_FALLBACK;
   const [me, setMe] = useState<string | null>(null);
   if (!me) return (
     <div>
       <h2 className="text-xl font-bold text-slate-900 mb-4">View Runner Queue</h2>
       <div className="grid grid-cols-2 gap-3">
-        {RUNNERS.map(r => (
+        {runnerNames.map(r => (
           <button key={r} onClick={() => setMe(r)}
             className="bg-white border border-slate-200 rounded-2xl py-9 font-bold text-slate-900 active:bg-slate-50 shadow-sm text-lg">
             {r}
@@ -2653,18 +2901,66 @@ function AdminTodayChanges({ overrides, futureOverrides, camperMap, campers, onS
 
 const ALL_ROLES: Role[] = ["counselor","specialist","carline","walkup","dispatcher","runner","director","admin","beforecare","aftercare","bus","unithead"];
 const ROLE_LABEL: Record<string, string> = {
-  counselor:"Counselor",specialist:"Specialist",carline:"Carline",walkup:"Walk-Up",
-  dispatcher:"Dispatcher",runner:"Runner",director:"Director",admin:"Admin",
-  beforecare:"Before Care",aftercare:"After Care",bus:"Bus",unithead:"Unit Head",
+  counselor:"Bunk Counselor",specialist:"Specialist",carline:"Dismissal Staff",walkup:"Dismissal Staff",
+  dispatcher:"Dismissal Staff",runner:"Runner",director:"Director",admin:"Admin",
+  beforecare:"Before Care Staff",aftercare:"After Care Staff",bus:"Bus Staff",unithead:"Unit Head",
 };
 
+const PRIMARY_ROLE_OPTIONS: { value: Role; label: string }[] = [
+  { value: "admin",      label: "Admin" },
+  { value: "director",   label: "Office" },
+  { value: "unithead",   label: "Unit Head" },
+  { value: "counselor",  label: "Bunk Counselor" },
+  { value: "specialist", label: "Specialist" },
+  { value: "carline",    label: "Dismissal Staff" },
+  { value: "runner",     label: "Runner" },
+  { value: "bus",        label: "Bus Staff" },
+  { value: "beforecare", label: "Before Care Staff" },
+  { value: "aftercare",  label: "After Care Staff" },
+];
+
+const UNIT_OPTIONS = ["Lower", "Middle", "Upper", "CIT", "Swim", "Sports", "Tennis", "Specialty"];
+
+const STAFF_CSV_HEADERS = ["firstName","lastName","email","phone","primaryRole","assignedBunk","assignedUnit","campSection","canBeRunner","busRoute","beforeCare","afterCare","isActive","loginCode","runnerLabel"];
+
 type StaffFormData = {
-  name: string; code: string; role: Role; extraRoles: Role[];
-  bunkAssignment: string; runnerLabel: string;
+  firstName: string; lastName: string; email: string; phone: string;
+  code: string; role: Role; extraRoles: Role[];
+  bunkAssignment: string; unitAssignment: string; campSection: string;
+  busRoute: string; canBeRunner: boolean; runnerLabel: string; isActive: boolean;
 };
+
+const STAFF_BLANK: StaffFormData = {
+  firstName: "", lastName: "", email: "", phone: "", code: "",
+  role: "counselor", extraRoles: [], bunkAssignment: "", unitAssignment: "",
+  campSection: "", busRoute: "", canBeRunner: false, runnerLabel: "", isActive: true,
+};
+
+function staffFormFromDoc(s: StaffDoc): StaffFormData {
+  const parts = s.name.split(" ");
+  return {
+    firstName: s.firstName ?? parts[0] ?? "",
+    lastName: s.lastName ?? parts.slice(1).join(" ") ?? "",
+    email: s.email ?? "",
+    phone: s.phone ?? "",
+    code: s.code,
+    role: s.role as Role,
+    extraRoles: (s.extraRoles ?? []) as Role[],
+    bunkAssignment: s.bunkAssignment ?? "",
+    unitAssignment: s.unitAssignment ?? "",
+    campSection: s.campSection ?? "",
+    busRoute: s.busRoute ?? "",
+    canBeRunner: s.canBeRunner ?? false,
+    runnerLabel: s.runnerLabel ?? "",
+    isActive: s.isActive !== false,
+  };
+}
+
+type StaffCsvError = { row: number; field: string; message: string };
 
 function StaffManagement() {
   const staffList = useQuery(api.staff.list);
+  const bunkList  = useQuery(api.campers.getBunks, {});
   const createStaff = useMutation(api.staff.create);
   const updateStaff = useMutation(api.staff.update);
   const removeStaff = useMutation(api.staff.remove);
@@ -2672,43 +2968,48 @@ function StaffManagement() {
   const [editing, setEditing] = useState<StaffDoc | null>(null);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
+  const [form, setForm] = useState<StaffFormData>(STAFF_BLANK);
+  const [csvTab, setCsvTab] = useState(false);
+  const [csvPreview, setCsvPreview] = useState<{ rows: StaffFormData[]; errors: StaffCsvError[] } | null>(null);
+  const [csvUploading, setCsvUploading] = useState(false);
 
-  const blank: StaffFormData = { name: "", code: "", role: "counselor", extraRoles: [], bunkAssignment: "", runnerLabel: "" };
-  const [form, setForm] = useState<StaffFormData>(blank);
+  const bunks = bunkList ?? [];
 
-  const openAdd = () => { setForm(blank); setAdding(true); setEditing(null); setError(""); };
+  const openAdd = () => { setForm(STAFF_BLANK); setAdding(true); setEditing(null); setError(""); };
   const openEdit = (s: StaffDoc) => {
-    setForm({
-      name: s.name, code: s.code, role: s.role as Role,
-      extraRoles: (s.extraRoles ?? []) as Role[],
-      bunkAssignment: s.bunkAssignment ?? "",
-      runnerLabel: s.runnerLabel ?? "",
-    });
+    setForm(staffFormFromDoc(s));
     setEditing(s); setAdding(false); setError("");
   };
 
+  const buildSaveArgs = () => {
+    const name = `${form.firstName.trim()} ${form.lastName.trim()}`.trim();
+    return {
+      name: name || form.firstName.trim(),
+      firstName: form.firstName.trim() || undefined,
+      lastName: form.lastName.trim() || undefined,
+      email: form.email.trim() || undefined,
+      phone: form.phone.trim() || undefined,
+      code: form.code.trim(),
+      role: form.role,
+      extraRoles: form.extraRoles.length > 0 ? form.extraRoles : undefined,
+      bunkAssignment: form.bunkAssignment || undefined,
+      unitAssignment: form.unitAssignment || undefined,
+      campSection: form.campSection || undefined,
+      busRoute: form.busRoute || undefined,
+      canBeRunner: form.canBeRunner || undefined,
+      runnerLabel: form.runnerLabel.trim() || undefined,
+      isActive: form.isActive,
+    };
+  };
+
   const handleSave = async () => {
-    if (!form.name.trim() || !form.code.trim()) { setError("Name and code are required"); return; }
+    if (!form.firstName.trim() || !form.code.trim()) { setError("First name and login code are required"); return; }
     try {
+      const args = buildSaveArgs();
       if (editing) {
-        await updateStaff({
-          id: editing._id,
-          name: form.name.trim(),
-          code: form.code.trim(),
-          role: form.role,
-          extraRoles: form.extraRoles.length > 0 ? form.extraRoles : undefined,
-          bunkAssignment: form.bunkAssignment.trim() || undefined,
-          runnerLabel: form.runnerLabel.trim() || undefined,
-        });
+        await updateStaff({ id: editing._id, ...args });
       } else {
-        await createStaff({
-          name: form.name.trim(),
-          code: form.code.trim(),
-          role: form.role,
-          extraRoles: form.extraRoles.length > 0 ? form.extraRoles : undefined,
-          bunkAssignment: form.bunkAssignment.trim() || undefined,
-          runnerLabel: form.runnerLabel.trim() || undefined,
-        });
+        await createStaff(args);
       }
       setEditing(null); setAdding(false); setError("");
     } catch (e: unknown) {
@@ -2722,16 +3023,144 @@ function StaffManagement() {
     if (editing?._id === s._id) { setEditing(null); }
   };
 
+  // CSV role mapping
+  const csvRoleMap: Record<string, Role> = {
+    "admin": "admin", "office": "director", "unit head": "unithead", "unithead": "unithead",
+    "bunk counselor": "counselor", "counselor": "counselor",
+    "specialist": "specialist", "dismissal staff": "carline", "dismissal": "carline",
+    "runner": "runner", "bus staff": "bus", "bus": "bus",
+    "before care staff": "beforecare", "before care": "beforecare", "beforecare": "beforecare",
+    "after care staff": "aftercare", "after care": "aftercare", "aftercare": "aftercare",
+    "director": "director", "carline": "carline", "walkup": "walkup", "dispatcher": "dispatcher",
+  };
+
+  const parseBool = (v: string) => ["true","yes","1","y"].includes(v.toLowerCase().trim());
+
+  const handleCsvFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const { headers, rows: rawRows } = parseCsv(text);
+      const errors: StaffCsvError[] = [];
+      const rows: StaffFormData[] = [];
+      rawRows.forEach((row, i) => {
+        const rn = i + 2;
+        const fn = row["firstName"]?.trim() ?? "";
+        const ln = row["lastName"]?.trim() ?? "";
+        if (!fn) errors.push({ row: rn, field: "firstName", message: "Required" });
+        if (!ln) errors.push({ row: rn, field: "lastName", message: "Required" });
+        const roleRaw = row["primaryRole"]?.trim().toLowerCase() ?? "";
+        const role = csvRoleMap[roleRaw];
+        if (!role && roleRaw) errors.push({ row: rn, field: "primaryRole", message: `Unknown role: ${row["primaryRole"]}` });
+        if (!role && !roleRaw) errors.push({ row: rn, field: "primaryRole", message: "Required" });
+        const bunk = row["assignedBunk"]?.trim() ?? "";
+        if (bunk && bunks.length > 0 && !bunks.includes(bunk)) errors.push({ row: rn, field: "assignedBunk", message: `Unknown bunk: ${bunk}` });
+        const unit = row["assignedUnit"]?.trim() ?? "";
+        if (unit && !UNIT_OPTIONS.includes(unit)) errors.push({ row: rn, field: "assignedUnit", message: `Unknown unit: ${unit}` });
+        const br = row["busRoute"]?.trim() ?? "";
+        if (br && !BUS_ROUTES.includes(br)) errors.push({ row: rn, field: "busRoute", message: `Unknown bus route: ${br}` });
+        rows.push({
+          firstName: fn, lastName: ln,
+          email: row["email"]?.trim() ?? "",
+          phone: row["phone"]?.trim() ?? "",
+          code: row["loginCode"]?.trim() ?? "",
+          role: role ?? "counselor",
+          extraRoles: [],
+          bunkAssignment: bunk,
+          unitAssignment: unit,
+          campSection: row["campSection"]?.trim() ?? "",
+          busRoute: br,
+          canBeRunner: parseBool(row["canBeRunner"] ?? ""),
+          runnerLabel: row["runnerLabel"]?.trim() ?? "",
+          isActive: row["isActive"] ? parseBool(row["isActive"]) : true,
+        });
+      });
+      setCsvPreview({ rows, errors });
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const handleCsvUpload = async () => {
+    if (!csvPreview || csvPreview.errors.length > 0) return;
+    setCsvUploading(true);
+    try {
+      for (const row of csvPreview.rows) {
+        const name = `${row.firstName} ${row.lastName}`.trim();
+        const existing = staffList?.find(s => s.email && s.email === row.email);
+        const args = {
+          name, firstName: row.firstName || undefined, lastName: row.lastName || undefined,
+          email: row.email || undefined, phone: row.phone || undefined,
+          code: row.code, role: row.role,
+          bunkAssignment: row.bunkAssignment || undefined,
+          unitAssignment: row.unitAssignment || undefined,
+          campSection: row.campSection || undefined,
+          busRoute: row.busRoute || undefined,
+          canBeRunner: row.canBeRunner || undefined,
+          runnerLabel: row.runnerLabel || undefined,
+          isActive: row.isActive,
+        };
+        if (existing) {
+          await updateStaff({ id: existing._id, ...args });
+        } else {
+          await createStaff(args);
+        }
+      }
+      setCsvPreview(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Upload failed");
+    }
+    setCsvUploading(false);
+  };
+
+  const downloadCsv = () => {
+    if (!staffList) return;
+    const rows = staffList.map(s => {
+      const roleLabel = PRIMARY_ROLE_OPTIONS.find(r => r.value === s.role)?.label ?? s.role;
+      return [
+        s.firstName ?? s.name.split(" ")[0] ?? "", s.lastName ?? s.name.split(" ").slice(1).join(" ") ?? "",
+        s.email ?? "", s.phone ?? "", roleLabel,
+        s.bunkAssignment ?? "", s.unitAssignment ?? "", s.campSection ?? "",
+        s.canBeRunner ? "TRUE" : "FALSE", s.busRoute ?? "",
+        "", "", s.isActive !== false ? "TRUE" : "FALSE", s.code, s.runnerLabel ?? "",
+      ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(",");
+    });
+    const csv = STAFF_CSV_HEADERS.join(",") + "\n" + rows.join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "staff.csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadTemplate = () => {
+    const csv = STAFF_CSV_HEADERS.join(",") + "\n";
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "staff_template.csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   if (staffList === undefined) return <Loading />;
 
   const filtered = staffList.filter(s => {
     if (!q) return true;
     const low = q.toLowerCase();
     return s.name.toLowerCase().includes(low) || s.code.includes(low)
-      || s.role.toLowerCase().includes(low) || (s.bunkAssignment ?? "").toLowerCase().includes(low);
+      || s.role.toLowerCase().includes(low) || (s.bunkAssignment ?? "").toLowerCase().includes(low)
+      || (s.email ?? "").toLowerCase().includes(low);
   });
 
   const showForm = adding || editing;
+
+  const needsBunk    = form.role === "counselor" || form.extraRoles.includes("counselor");
+  const needsUnit    = form.role === "unithead"  || form.extraRoles.includes("unithead");
+  const needsBus     = form.role === "bus"       || form.extraRoles.includes("bus");
+  const needsRunner  = form.role === "runner"    || form.extraRoles.includes("runner") || form.canBeRunner;
+
+  const inp = "w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none";
+  const lbl = "text-xs font-semibold text-slate-500 mb-1 block";
 
   return (
     <>
@@ -2747,10 +3176,73 @@ function StaffManagement() {
           </button>
         </div>
 
+        {/* CSV actions */}
+        <div className="flex gap-2 flex-wrap">
+          <button onClick={() => setCsvTab(!csvTab)}
+            className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 active:bg-slate-50">
+            {csvTab ? "Hide CSV" : "CSV Upload / Download"}
+          </button>
+        </div>
+        {csvTab && (
+          <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
+            <div className="flex gap-2 flex-wrap">
+              <label className="text-xs font-semibold text-white px-3 py-1.5 rounded-lg cursor-pointer active:opacity-80"
+                style={{ backgroundColor: "#023B64" }}>
+                Upload Staff CSV
+                <input type="file" accept=".csv" onChange={handleCsvFile} className="hidden" />
+              </label>
+              <button onClick={downloadCsv} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 active:bg-slate-50">
+                Download Staff CSV
+              </button>
+              <button onClick={downloadTemplate} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 active:bg-slate-50">
+                Download Template
+              </button>
+            </div>
+            {csvPreview && (
+              <div className="space-y-2">
+                <p className="text-sm font-semibold text-slate-700">{csvPreview.rows.length} staff found</p>
+                {csvPreview.errors.length > 0 && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-3 space-y-1">
+                    <p className="text-xs font-bold text-red-600">{csvPreview.errors.length} error(s) — fix before uploading</p>
+                    {csvPreview.errors.map((err, i) => (
+                      <p key={i} className="text-xs text-red-600">Row {err.row}, {err.field}: {err.message}</p>
+                    ))}
+                  </div>
+                )}
+                {csvPreview.errors.length === 0 && (
+                  <div className="space-y-1">
+                    <div className="max-h-48 overflow-auto border border-slate-200 rounded-xl">
+                      <table className="w-full text-xs">
+                        <thead><tr className="bg-slate-50 text-left"><th className="px-2 py-1">Name</th><th className="px-2 py-1">Role</th><th className="px-2 py-1">Code</th><th className="px-2 py-1">Bunk</th></tr></thead>
+                        <tbody>
+                          {csvPreview.rows.map((r, i) => (
+                            <tr key={i} className="border-t border-slate-100">
+                              <td className="px-2 py-1">{r.firstName} {r.lastName}</td>
+                              <td className="px-2 py-1">{PRIMARY_ROLE_OPTIONS.find(o => o.value === r.role)?.label ?? r.role}</td>
+                              <td className="px-2 py-1 font-mono">{r.code}</td>
+                              <td className="px-2 py-1">{r.bunkAssignment}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <button onClick={handleCsvUpload} disabled={csvUploading}
+                      className="w-full py-2.5 text-sm font-bold text-white rounded-xl active:opacity-80 disabled:opacity-50"
+                      style={{ backgroundColor: "#023B64" }}>
+                      {csvUploading ? "Uploading…" : `Upload ${csvPreview.rows.length} Staff`}
+                    </button>
+                  </div>
+                )}
+                <button onClick={() => setCsvPreview(null)} className="text-xs text-slate-400 active:text-slate-600">Cancel</button>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="relative">
           <Search size={17} className="absolute left-3.5 top-3.5 text-slate-400" />
           <input value={q} onChange={e => setQ(e.target.value)}
-            placeholder="Search name, code, role, bunk…"
+            placeholder="Search name, code, role, bunk, email…"
             className="w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl focus:outline-none text-sm bg-white"
             onFocus={e => (e.currentTarget.style.borderColor = "#023B64")}
             onBlur={e => (e.currentTarget.style.borderColor = "")} />
@@ -2761,30 +3253,28 @@ function StaffManagement() {
             <div key={s._id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <button onClick={() => openEdit(s)} className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-slate-50">
                 <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white flex-shrink-0"
-                  style={{ backgroundColor: avatarBg(s.name) }}>
+                  style={{ backgroundColor: s.isActive === false ? "#94a3b8" : avatarBg(s.name) }}>
                   {s.name.charAt(0).toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="font-semibold text-slate-900">{s.name}</span>
+                    <span className={`font-semibold ${s.isActive === false ? "text-slate-400" : "text-slate-900"}`}>{s.name}</span>
                     <span className="text-xs font-mono text-slate-400">{s.code}</span>
+                    {s.isActive === false && <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">Inactive</span>}
                   </div>
                   <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                     <span className="text-xs font-semibold px-2 py-0.5 rounded-full text-white"
                       style={{ backgroundColor: "#023B64" }}>
-                      {ROLE_LABEL[s.role] ?? s.role}
+                      {PRIMARY_ROLE_OPTIONS.find(r => r.value === s.role)?.label ?? ROLE_LABEL[s.role] ?? s.role}
                     </span>
                     {(s.extraRoles ?? []).map(r => (
                       <span key={r} className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
                         {ROLE_LABEL[r] ?? r}
                       </span>
                     ))}
-                    {s.bunkAssignment && (
-                      <span className="text-xs text-slate-500">Bunk {s.bunkAssignment}</span>
-                    )}
-                    {s.runnerLabel && (
-                      <span className="text-xs text-slate-500">{s.runnerLabel}</span>
-                    )}
+                    {s.bunkAssignment && <span className="text-xs text-slate-500">{s.bunkAssignment}</span>}
+                    {s.busRoute && <span className="text-xs text-slate-500">{s.busRoute}</span>}
+                    {s.canBeRunner && <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Runner</span>}
                   </div>
                 </div>
                 <ChevronRight size={16} className="text-slate-300 flex-shrink-0" />
@@ -2806,74 +3296,146 @@ function StaffManagement() {
             <div className="px-5 pt-2 pb-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-lg font-bold text-slate-900">{editing ? "Edit Staff" : "Add Staff"}</h3>
-                {editing && (
-                  <button onClick={() => handleDelete(editing)}
-                    className="text-xs text-red-500 font-semibold px-3 py-1.5 rounded-lg active:bg-red-50">
-                    Delete
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  {editing && (
+                    <button onClick={() => handleDelete(editing)}
+                      className="text-xs text-red-500 font-semibold px-3 py-1.5 rounded-lg active:bg-red-50">
+                      Delete
+                    </button>
+                  )}
+                </div>
               </div>
 
               {error && <p className="text-sm text-red-500 font-medium">{error}</p>}
 
-              <div>
-                <label className="text-xs font-semibold text-slate-500 mb-1 block">Name</label>
-                <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
-                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none"
-                  placeholder="Full name" />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>First Name *</label>
+                  <input value={form.firstName} onChange={e => setForm({ ...form, firstName: e.target.value })}
+                    className={inp} placeholder="First name" />
+                </div>
+                <div>
+                  <label className={lbl}>Last Name</label>
+                  <input value={form.lastName} onChange={e => setForm({ ...form, lastName: e.target.value })}
+                    className={inp} placeholder="Last name" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Email</label>
+                  <input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })}
+                    className={inp} placeholder="Email" />
+                </div>
+                <div>
+                  <label className={lbl}>Phone</label>
+                  <input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })}
+                    className={inp} placeholder="Phone" />
+                </div>
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-slate-500 mb-1 block">Login Code</label>
+                <label className={lbl}>Login Code *</label>
                 <input value={form.code} onChange={e => setForm({ ...form, code: e.target.value.replace(/\D/g, "") })}
-                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none font-mono"
-                  placeholder="4-digit code" maxLength={6} inputMode="numeric" />
+                  className={`${inp} font-mono`} placeholder="4-digit code" maxLength={6} inputMode="numeric" />
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-slate-500 mb-1 block">Primary Role</label>
+                <label className={lbl}>Primary Role *</label>
                 <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value as Role })}
-                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none bg-white">
-                  {ALL_ROLES.map(r => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+                  className={`${inp} bg-white`}>
+                  {PRIMARY_ROLE_OPTIONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
                 </select>
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-slate-500 mb-1 block">Extra Roles</label>
+                <label className={lbl}>Additional Roles</label>
                 <div className="flex flex-wrap gap-2">
-                  {ALL_ROLES.filter(r => r !== form.role).map(r => (
-                    <button key={r} onClick={() => {
-                      const has = form.extraRoles.includes(r);
-                      setForm({ ...form, extraRoles: has ? form.extraRoles.filter(x => x !== r) : [...form.extraRoles, r] });
+                  {PRIMARY_ROLE_OPTIONS.filter(r => r.value !== form.role).map(r => (
+                    <button key={r.value} onClick={() => {
+                      const has = form.extraRoles.includes(r.value);
+                      setForm({ ...form, extraRoles: has ? form.extraRoles.filter(x => x !== r.value) : [...form.extraRoles, r.value] });
                     }}
                       className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border transition-colors ${
-                        form.extraRoles.includes(r)
-                          ? "bg-slate-800 text-white border-slate-800"
-                          : "bg-white text-slate-500 border-slate-200"
+                        form.extraRoles.includes(r.value) ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-500 border-slate-200"
                       }`}>
-                      {ROLE_LABEL[r]}
+                      {r.label}
                     </button>
                   ))}
                 </div>
               </div>
 
-              {(form.role === "counselor" || form.extraRoles.includes("counselor")) && (
+              {/* Role-based conditional fields */}
+              {needsBunk && (
                 <div>
-                  <label className="text-xs font-semibold text-slate-500 mb-1 block">Bunk Assignment</label>
-                  <input value={form.bunkAssignment} onChange={e => setForm({ ...form, bunkAssignment: e.target.value })}
-                    className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none"
-                    placeholder="e.g. Asher" />
+                  <label className={lbl}>Assigned Bunk</label>
+                  <select value={form.bunkAssignment} onChange={e => setForm({ ...form, bunkAssignment: e.target.value })}
+                    className={`${inp} bg-white`}>
+                    <option value="">Select bunk…</option>
+                    {bunks.map(b => <option key={b} value={b}>{b}</option>)}
+                  </select>
                 </div>
               )}
 
-              {(form.role === "runner" || form.extraRoles.includes("runner")) && (
+              {needsUnit && (
                 <div>
-                  <label className="text-xs font-semibold text-slate-500 mb-1 block">Runner Label</label>
-                  <input value={form.runnerLabel} onChange={e => setForm({ ...form, runnerLabel: e.target.value })}
-                    className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none"
-                    placeholder="e.g. Runner 1" />
+                  <label className={lbl}>Assigned Unit</label>
+                  <select value={form.unitAssignment} onChange={e => setForm({ ...form, unitAssignment: e.target.value })}
+                    className={`${inp} bg-white`}>
+                    <option value="">Select unit…</option>
+                    {UNIT_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                  {form.unitAssignment && bunks.length > 0 && (
+                    <div className="mt-1.5">
+                      <p className="text-[10px] text-slate-400">Bunks in {form.unitAssignment}:</p>
+                      <p className="text-xs text-slate-500">{bunks.filter(b => b.toLowerCase().startsWith(form.unitAssignment.toLowerCase())).join(", ") || "None found"}</p>
+                    </div>
+                  )}
                 </div>
               )}
+
+              {(needsBunk || needsUnit) && (
+                <div>
+                  <label className={lbl}>Camp Section</label>
+                  <select value={form.campSection} onChange={e => setForm({ ...form, campSection: e.target.value })}
+                    className={`${inp} bg-white`}>
+                    <option value="">Select section…</option>
+                    {UNIT_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
+                  </select>
+                </div>
+              )}
+
+              {needsBus && (
+                <div>
+                  <label className={lbl}>Bus Route</label>
+                  <select value={form.busRoute} onChange={e => setForm({ ...form, busRoute: e.target.value })}
+                    className={`${inp} bg-white`}>
+                    <option value="">Select bus route…</option>
+                    {BUS_ROUTES.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+              )}
+
+              {needsRunner && (
+                <div>
+                  <label className={lbl}>Runner Label</label>
+                  <input value={form.runnerLabel} onChange={e => setForm({ ...form, runnerLabel: e.target.value })}
+                    className={inp} placeholder="e.g. Runner 1" />
+                </div>
+              )}
+
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                  <input type="checkbox" checked={form.canBeRunner} onChange={e => setForm({ ...form, canBeRunner: e.target.checked })}
+                    className="w-4 h-4 rounded border-slate-300" />
+                  Can be runner
+                </label>
+                <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                  <input type="checkbox" checked={form.isActive} onChange={e => setForm({ ...form, isActive: e.target.checked })}
+                    className="w-4 h-4 rounded border-slate-300" />
+                  Active
+                </label>
+              </div>
 
               <button onClick={handleSave}
                 className="w-full py-3 text-sm font-bold text-white rounded-xl active:opacity-80"
@@ -2935,6 +3497,7 @@ const CAMPER_FIELDS: { key: string; label: string; required: boolean; boolean?: 
   { key: "preferredName",   label: "Preferred Name",    required: true  },
   { key: "lastName",        label: "Last Name",         required: false },
   { key: "bunk",            label: "Group",             required: true  },
+  { key: "camp",            label: "Camp",              required: false },
   { key: "code",            label: "Safety Code",       required: true  },
   { key: "arrivalMethod",   label: "Arrival Method",    required: true  },
   { key: "dismissalMethod", label: "Dismissal Method",  required: true  },
@@ -3133,6 +3696,9 @@ function CamperUpload() {
         const grade = mapping.grade && row[mapping.grade]?.trim();
         if (grade) camper.grade = grade;
 
+        const camp = mapping.camp && row[mapping.camp]?.trim();
+        if (camp) camper.camp = camp;
+
         if (mapping.photoUrl) {
           const url = normalizePhotoUrl(row[mapping.photoUrl] ?? "");
           if (url) camper.photoUrl = url;
@@ -3251,7 +3817,7 @@ function CamperUpload() {
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Optional columns</p>
               <div className="flex flex-wrap gap-1.5">
-                {["lastName","grade","photoUrl","allergyNotes","camperNotes"].map(c => (
+                {["lastName","camp","grade","photoUrl","allergyNotes","camperNotes"].map(c => (
                   <span key={c} className="px-2 py-1 bg-blue-50 text-blue-700 rounded-lg text-xs font-mono">{c}</span>
                 ))}
               </div>
@@ -3271,7 +3837,7 @@ function CamperUpload() {
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Sample header row</p>
               <div className="bg-slate-900 text-green-300 rounded-xl p-3 text-[10px] font-mono overflow-x-auto whitespace-nowrap">
-                preferredName,lastName,group,code,arrivalMethod,dismissalMethod,grade,photoUrl,allergyNotes,camperNotes
+                preferredName,lastName,group,camp,code,arrivalMethod,dismissalMethod,grade,photoUrl,allergyNotes,camperNotes
               </div>
             </div>
 
