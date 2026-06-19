@@ -1,45 +1,59 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
   <rect width="100" height="100" rx="18" fill="#F7F2EA"/>
 
-  <!-- Light blue/gray segmented arc behind sun (upper-left quadrant) -->
-  <g opacity="0.5">
-    <path d="M38 18 L42 10 L48 12 L44 20 Z" fill="#9BB8CC"/>
-    <path d="M28 22 L30 14 L36 16 L34 24 Z" fill="#BFD3DE"/>
-    <path d="M20 30 L18 22 L24 20 L26 28 Z" fill="#9BB8CC"/>
-    <path d="M16 40 L8 38 L10 32 L18 34 Z" fill="#BFD3DE"/>
-    <path d="M16 50 L8 50 L8 44 L16 44 Z" fill="#9BB8CC"/>
-    <path d="M18 60 L10 62 L8 56 L16 54 Z" fill="#BFD3DE"/>
-    <path d="M22 68 L16 74 L12 70 L18 64 Z" fill="#9BB8CC"/>
-  </g>
+  <!-- Dark green J shape — capital J: flat top bar + vertical stroke on right + curve bottom-left -->
+  <path d="
+    M56 10 L76 10 L76 64
+    Q76 90 50 90
+    Q24 90 18 74
+    L28 68
+    Q34 82 50 82
+    Q66 82 66 64
+    L66 10 Z
+  " fill="#0E6B52"/>
 
-  <!-- White circle background for sun area -->
-  <circle cx="38" cy="42" r="22" fill="white"/>
+  <!-- Green lower fill that merges with J bottom -->
+  <path d="
+    M18 74 L28 68
+    Q34 82 50 82
+    Q66 82 66 64
+    L76 64
+    Q76 90 50 90
+    Q24 90 18 74 Z
+  " fill="#0E6B52"/>
 
-  <!-- Dark green J shape -->
-  <path d="M46 20 L60 20 L60 62 Q60 80 42 80 Q28 80 24 72 L32 68 Q34 74 42 74 Q52 74 52 62 L52 28 L46 28 Z" fill="#006B52"/>
+  <!-- Sun background: white circle in the bowl of the J -->
+  <circle cx="42" cy="44" r="23" fill="white"/>
 
-  <!-- Dark green waves at bottom -->
-  <path d="M20 66 Q28 60 36 66 Q44 72 52 66 Q58 61 64 66" stroke="#006B52" stroke-width="4" fill="none" stroke-linecap="round"/>
-  <path d="M20 74 Q28 68 36 74 Q44 80 52 74" stroke="#006B52" stroke-width="3.5" fill="none" stroke-linecap="round" opacity="0.7"/>
+  <!-- Golden yellow thick crescent arc wrapping top-left of sun -->
+  <path d="
+    M42 21
+    A23 23 0 0 0 19 44
+    A23 23 0 0 0 26 60
+    A17 17 0 0 1 25 44
+    A17 17 0 0 1 42 27
+    Z
+  " fill="#F2A900"/>
 
-  <!-- Sun rays -->
-  <g stroke="#F2A900" stroke-width="2.5" stroke-linecap="round">
-    <line x1="38" y1="20" x2="38" y2="14"/>
-    <line x1="48" y1="23" x2="52" y2="18"/>
-    <line x1="54" y1="32" x2="59" y2="29"/>
-    <line x1="28" y1="23" x2="24" y2="18"/>
-    <line x1="22" y1="32" x2="17" y2="29"/>
-  </g>
-  <!-- Lighter rays -->
-  <g stroke="#F7C948" stroke-width="2" stroke-linecap="round" opacity="0.7">
-    <line x1="33" y1="20" x2="31" y2="14"/>
-    <line x1="43" y1="20" x2="45" y2="14"/>
-    <line x1="51" y1="27" x2="56" y2="23"/>
-    <line x1="25" y1="27" x2="20" y2="23"/>
-  </g>
+  <!-- Sun rays — thick wedges radiating upper-left, alternating gold/light gold -->
+  <polygon points="40,23 44,23 46,10 38,10" fill="#F2A900"/>
+  <polygon points="35,24 40,23 36,10 30,12" fill="#F7C948"/>
+  <polygon points="30,27 35,24 26,12 22,16" fill="#F2A900"/>
+  <polygon points="26,32 30,27 18,16 16,20" fill="#F7C948"/>
+  <polygon points="22,37 26,32 12,22 10,28" fill="#F2A900"/>
+  <polygon points="20,43 22,37 8,30 8,36" fill="#F7C948"/>
+  <polygon points="19,50 20,43 6,38 6,44" fill="#F2A900"/>
 
-  <!-- Sun circle (orange gradient) -->
-  <circle cx="38" cy="36" r="10" fill="#F2A900"/>
-  <!-- Sun inner dot -->
-  <circle cx="38" cy="36" r="5" fill="#D4820C"/>
+  <!-- Light blue-gray arc segments (lower-left and upper-right of sun) -->
+  <path d="M46,23 A23 23 0 0 1 60,32 L56,36 A17 17 0 0 0 46,29 Z" fill="#B4C8D8"/>
+  <path d="M22,56 A23 23 0 0 0 36,66 L34,60 A17 17 0 0 1 26,52 Z" fill="#B4C8D8"/>
+
+  <!-- Orange center dot -->
+  <circle cx="42" cy="44" r="10" fill="#D98D1B"/>
+
+  <!-- White waves cutting across the J horizontally -->
+  <path d="
+    M16 66 Q26 58 36 66 Q46 74 56 66 Q64 60 72 66
+    L72 62 Q64 56 56 62 Q46 70 36 62 Q26 54 16 62 Z
+  " fill="white"/>
 </svg>
