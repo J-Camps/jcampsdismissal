@@ -7,47 +7,40 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
 const pub = join(root, "public");
 const iconsDir = join(pub, "icons");
-
 mkdirSync(iconsDir, { recursive: true });
 
-const source = join(pub, "emblem-cropped.png");
+const source = join(pub, "emblem-source.png");
 
-async function makeIcon(size, output, { padding = 0.1, background = "#F7F2EA", round = 0 } = {}) {
-  const pad = Math.round(size * padding);
-  const inner = size - pad * 2;
-  const buf = await sharp(source)
-    .resize(inner, inner, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .toBuffer();
+// Standard icons — just resize the source image to each target size
+const sizes = [
+  { size: 16, out: join(pub, "favicon-16x16.png") },
+  { size: 32, out: join(pub, "favicon-32x32.png") },
+  { size: 180, out: join(pub, "apple-touch-icon.png") },
+  { size: 192, out: join(iconsDir, "icon-192.png") },
+  { size: 512, out: join(iconsDir, "icon-512.png") },
+];
 
-  let img = sharp({
-    create: { width: size, height: size, channels: 4, background },
-  })
-    .composite([{ input: buf, left: pad, top: pad }])
-    .png();
-
-  await img.toFile(output);
-  console.log(`  ✓ ${output.replace(root + "/", "")} (${size}x${size})`);
+for (const { size, out } of sizes) {
+  await sharp(source)
+    .resize(size, size, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 0 } })
+    .png()
+    .toFile(out);
+  console.log(`  ✓ ${out.replace(root + "/", "")} (${size}x${size})`);
 }
 
-// Favicons — tighter padding, transparent background for SVG-like feel
-await makeIcon(16, join(pub, "favicon-16x16.png"), { padding: 0.06, background: { r: 0, g: 0, b: 0, alpha: 0 } });
-await makeIcon(32, join(pub, "favicon-32x32.png"), { padding: 0.06, background: { r: 0, g: 0, b: 0, alpha: 0 } });
+// Maskable icons — need solid background so the safe zone works
+for (const size of [192, 512]) {
+  await sharp(source)
+    .resize(size, size, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 255 } })
+    .flatten({ background: { r: 255, g: 255, b: 255 } })
+    .png()
+    .toFile(join(iconsDir, `maskable-icon-${size}.png`));
+  console.log(`  ✓ public/icons/maskable-icon-${size}.png (${size}x${size})`);
+}
 
-// Apple touch icon — cream background, some padding
-await makeIcon(180, join(pub, "apple-touch-icon.png"), { padding: 0.1 });
-
-// Standard app icons — cream background
-await makeIcon(192, join(iconsDir, "icon-192.png"), { padding: 0.1 });
-await makeIcon(512, join(iconsDir, "icon-512.png"), { padding: 0.1 });
-
-// Maskable icons — more padding (safe zone is inner 80%)
-await makeIcon(192, join(iconsDir, "maskable-icon-192.png"), { padding: 0.15 });
-await makeIcon(512, join(iconsDir, "maskable-icon-512.png"), { padding: 0.15 });
-
-// Generate favicon.ico (32x32 PNG-in-ICO)
+// favicon.ico
 const ico32 = await sharp(source)
-  .resize(30, 30, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
-  .extend({ top: 1, bottom: 1, left: 1, right: 1, background: { r: 0, g: 0, b: 0, alpha: 0 } })
+  .resize(32, 32, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 0 } })
   .png()
   .toBuffer();
 
