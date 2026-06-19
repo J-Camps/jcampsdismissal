@@ -59,30 +59,30 @@ export const getBunks = query({
   },
 });
 
-// All campers enrolled in Before Care
+// All campers enrolled in Before Care (via arrivalMethod or legacy beforeCare flag)
 export const getBeforeCareRoster = query({
   args: {},
   handler: async (ctx) => {
     const all = await ctx.db.query("campers").collect();
-    return all.filter((c) => c.beforeCare);
+    return all.filter((c) => c.arrivalMethod === "Before Care" || c.beforeCare);
   },
 });
 
-// All campers enrolled in After Care
+// All campers enrolled in After Care (via dismissalMethod or legacy afterCare flag)
 export const getAfterCareRoster = query({
   args: {},
   handler: async (ctx) => {
     const all = await ctx.db.query("campers").collect();
-    return all.filter((c) => c.afterCare);
+    return all.filter((c) => c.dismissalMethod === "After Care" || c.afterCare);
   },
 });
 
-// All campers assigned to a given bus route (one of the 6 bus attendance sheets)
+// All campers assigned to a given bus route (via arrivalMethod/dismissalMethod or legacy busRoute)
 export const getBusRoster = query({
   args: { route: v.string() },
   handler: async (ctx, { route }) => {
     const all = await ctx.db.query("campers").collect();
-    return all.filter((c) => c.busRoute === route);
+    return all.filter((c) => c.arrivalMethod === route || c.dismissalMethod === route || c.busRoute === route);
   },
 });
 
@@ -131,12 +131,72 @@ export const create = mutation({
     defaultMorningArrival: v.optional(v.string()),
     defaultAfternoonDismissal: v.optional(v.string()),
     photoUrl: v.optional(v.string()),
+    arrivalMethod: v.optional(v.string()),
+    dismissalMethod: v.optional(v.string()),
+    camperNotes: v.optional(v.string()),
     periodGroups: v.optional(v.record(v.string(), v.string())),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("campers", {
       ...args,
       status: args.status ?? "Waiting",
+    });
+  },
+});
+
+// ─── Admin Edit (with audit log) ────────────────────────────────────────────
+
+export const adminEdit = mutation({
+  args: {
+    id: v.id("campers"),
+    staffName: v.string(),
+    preferredName: v.optional(v.string()),
+    lastName: v.optional(v.string()),
+    bunk: v.optional(v.string()),
+    code: v.optional(v.string()),
+    grade: v.optional(v.string()),
+    arrivalMethod: v.optional(v.string()),
+    dismissalMethod: v.optional(v.string()),
+    photoUrl: v.optional(v.string()),
+    allergyNotes: v.optional(v.string()),
+    camperNotes: v.optional(v.string()),
+  },
+  handler: async (ctx, { id, staffName, allergyNotes, camperNotes, preferredName, ...fields }) => {
+    const camper = await ctx.db.get(id);
+    if (!camper) return;
+
+    const patch: Record<string, unknown> = { ...fields };
+
+    if (preferredName !== undefined) {
+      patch.preferredName = preferredName;
+      patch.name = preferredName;
+    }
+    if (allergyNotes !== undefined) {
+      patch.allergyDetails = allergyNotes.trim() || undefined;
+      patch.hasAllergies = !!allergyNotes.trim();
+    }
+    if (camperNotes !== undefined) {
+      patch.camperNotes = camperNotes.trim() || undefined;
+      patch.hasNotes = !!camperNotes.trim();
+    }
+
+    // Build audit log of what changed
+    const changes: string[] = [];
+    for (const [key, val] of Object.entries(patch)) {
+      const old = (camper as Record<string, unknown>)[key];
+      if (old !== val) changes.push(`${key}: ${JSON.stringify(old)} → ${JSON.stringify(val)}`);
+    }
+
+    if (changes.length === 0) return;
+
+    await ctx.db.patch(id, patch);
+    await ctx.db.insert("attendanceLogs", {
+      camperId: id,
+      date: today(),
+      checkpoint: "BunkConfirm" as const,
+      status: `Admin edit: ${changes.join(", ")}`,
+      staffName,
+      timestamp: Date.now(),
     });
   },
 });
@@ -214,12 +274,8 @@ export const dismiss = mutation({
 });
 
 // Clear live daily state for all campers to start a fresh day.
-// IMPORTANT: this does NOT touch the dailyOverrides table.
-// Future-dated overrides (tomorrow's early pickup, late drop-off, carpool notes, etc.)
-// survive this reset and will be applied correctly on their target date.
-// The embedded legacy override fields (lateDropoffTime, earlyPickupTime,
-// dailyArrivalOverride, dailyDismissalOverride) are also cleared here because
-// they are same-day fields only — date-scoped plans belong in dailyOverrides.
+// Does NOT touch the dailyOverrides table — future and today's overrides survive.
+// Today's overrides automatically stop showing when the date changes.
 export const clearDailyState = mutation({
   args: {},
   handler: async (ctx) => {
@@ -240,15 +296,6 @@ export const clearDailyState = mutation({
         leftEarly: undefined,
         tLeftEarly: undefined,
         attendanceNote: undefined,
-        periodAttendance: undefined,
-        dailyCheckpoints: undefined,
-        dailyCheckpointsOut: undefined,
-        // Legacy embedded override fields — cleared on rollover.
-        // New override writes go to the dailyOverrides table instead.
-        lateDropoffTime: undefined,
-        earlyPickupTime: undefined,
-        dailyArrivalOverride: undefined,
-        dailyDismissalOverride: undefined,
       });
     }
   },

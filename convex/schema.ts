@@ -189,6 +189,13 @@ export default defineSchema({
     beforeCare: v.optional(v.boolean()),
     afterCare: v.optional(v.boolean()),
 
+    // ── Week 0 simplified transport ─────────────────────────────────────
+    arrivalMethod: v.optional(v.string()),     // e.g. "Carline", "Before Care", "Bus 1"
+    dismissalMethod: v.optional(v.string()),   // e.g. "Carline", "After Care", "Bus 2"
+
+    // ── Camper notes (text drives the flag) ─────────────────────────────
+    camperNotes: v.optional(v.string()),
+
     // ── Photo ────────────────────────────────────────────────────────────
     photoUrl: v.optional(v.string()),
 
@@ -260,10 +267,13 @@ export default defineSchema({
     earlyPickupTime:    v.optional(v.string()),   // "HH:MM" 24h
     isAbsent:           v.optional(v.boolean()),
     note:               v.optional(v.string()),   // override note (e.g. "Going home with Smith family")
+    status:             v.optional(v.string()),   // "active" | "cleared" — defaults to active
     createdBy:          v.string(),
     updatedBy:          v.optional(v.string()),
     createdAt:          v.number(),
     updatedAt:          v.optional(v.number()),
+    clearedAt:          v.optional(v.number()),
+    clearedBy:          v.optional(v.string()),
   })
     .index("by_camper_date", ["camperId", "date"])
     .index("by_date",        ["date"]),

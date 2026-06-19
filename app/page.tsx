@@ -560,7 +560,7 @@ function CamperDashboardRow({ row, onClick }: { row: CamperRow; onClick: () => v
           {camper.hasNotes     && <StickyNote    size={11} className="text-blue-400 flex-shrink-0" />}
         </div>
         <p className="text-xs text-slate-500 mt-0.5">
-          {camper.bunk}{camper.unit ? ` · ${camper.unit}` : ""} · {row.arrival}
+          {camper.bunk}{camper.arrivalMethod ? ` · ${camper.arrivalMethod}` : ""}
         </p>
         <div className="flex gap-2.5 mt-1.5 flex-wrap">
           {dots.map((d, i) => (
@@ -782,6 +782,9 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName, isAdm
     camperId: camper._id,
     date: today(),
   });
+  const todayOverride = useQuery(api.dailyOverrides.getForCamper, { camperId: camper._id, date: today() });
+  const effectiveArrival = todayOverride?.morningArrival ?? camper.arrivalMethod ?? "—";
+  const effectiveDismissal = todayOverride?.afternoonDismissal ?? camper.dismissalMethod ?? "—";
 
   const resetMorning  = useMutation(api.campers.resetMorningStatus);
   const undoMarkOut   = useMutation(api.campers.undoLeftEarly);
@@ -789,7 +792,9 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName, isAdm
   const checkIn       = useMutation(api.campers.confirmWithBunk);
   const doMarkAbsent  = useMutation(api.campers.markAbsent);
   const doMarkOut     = useMutation(api.campers.markLeftEarly);
+  const adminEditMut  = useMutation(api.campers.adminEdit);
   const [noteDraft, setNoteDraft] = useState(camper.attendanceNote ?? "");
+  const [editing, setEditing] = useState(false);
   const [noteSaved, setNoteSaved] = useState(true);
 
   const displayName = camper.preferredName
@@ -881,12 +886,16 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName, isAdm
                   </div>
                 </div>
               )}
-              {camper.hasNotes && (
-                <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-2xl px-4 py-3.5">
-                  <BookOpen size={20} className="text-blue-500 flex-shrink-0" />
+              {(camper.hasNotes || camper.camperNotes) && (
+                <div className="flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-2xl px-4 py-3.5">
+                  <BookOpen size={20} className="text-blue-500 flex-shrink-0 mt-0.5" />
                   <div>
-                    <p className="font-bold text-blue-800 text-sm">Notes on File</p>
-                    <p className="text-blue-600 text-xs mt-0.5">See director for details.</p>
+                    <p className="font-bold text-blue-800 text-sm">Camper Notes</p>
+                    {camper.camperNotes ? (
+                      <p className="text-blue-600 text-xs mt-0.5">{camper.camperNotes}</p>
+                    ) : (
+                      <p className="text-blue-600 text-xs mt-0.5">See director for details.</p>
+                    )}
                   </div>
                 </div>
               )}
@@ -894,20 +903,30 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName, isAdm
           )}
 
           {/* Info grid */}
-          <div className="grid grid-cols-2 gap-2.5">
-            <InfoTile icon={<MapPin size={16} />}    label="Bunk"         value={camper.bunk} />
-            <InfoTile icon={<User size={16} />}      label="Grade"        value={camper.grade ?? "—"} />
-            {camper.camp && (
-              <InfoTile icon={<BookOpen size={16} />} label="Camp" value={camper.campDivision ? `${camper.camp} · ${camper.campDivision}` : camper.camp} />
-            )}
-            <InfoTile icon={<Bus size={16} />}       label="Transport"
-              value={TRANSPORT_LABEL[camper.transportationType ?? ""] ?? (camper.defaultAfternoonDismissal ?? "—")}
-              badge={camper.transportationType ? { label: TRANSPORT_LABEL[camper.transportationType], style: TRANSPORT_STYLE[camper.transportationType] } : undefined}
-            />
-            {!hideCode && (
-              <InfoTile icon={<Hash size={16} />} label="Pickup Code" value={`#${camper.code}`} mono />
-            )}
-          </div>
+          {!editing && (
+            <>
+              <div className="grid grid-cols-2 gap-2.5">
+                <InfoTile icon={<MapPin size={16} />}    label="Group"        value={camper.bunk} />
+                <InfoTile icon={<User size={16} />}      label="Grade"        value={camper.grade ?? "—"} />
+                <InfoTile icon={<ArrowRight size={16} />} label="Arrival"     value={effectiveArrival} />
+                <InfoTile icon={<Bus size={16} />}        label="Dismissal"   value={effectiveDismissal} />
+                {!hideCode && (
+                  <InfoTile icon={<Hash size={16} />} label="Pickup Code" value={`#${camper.code}`} mono />
+                )}
+              </div>
+              {isAdmin && staffName && (
+                <button onClick={() => setEditing(true)}
+                  className="w-full py-2.5 text-sm font-semibold text-[#023B64] bg-slate-50 border border-slate-200 rounded-xl active:bg-slate-100">
+                  Edit Camper Info
+                </button>
+              )}
+            </>
+          )}
+
+          {/* Admin edit form */}
+          {editing && isAdmin && staffName && (
+            <AdminCamperEditForm camper={camper} staffName={staffName} onDone={() => setEditing(false)} />
+          )}
 
           {/* Dismissal status badge if active */}
           {(camper.status === "Called" || camper.status === "Assigned") && (
@@ -959,6 +978,120 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+// ─── Admin Camper Edit Form ──────────────────────────────────────────────────
+
+const ARRIVAL_OPTIONS = ["Carline", "Before Care", "Bus 1", "Bus 2", "Bus 3", "Bus 4", "Bus 5", "Bus 6"];
+const DISMISSAL_OPTIONS = ["Carline", "After Care", "Bus 1", "Bus 2", "Bus 3", "Bus 4", "Bus 5", "Bus 6"];
+
+function AdminCamperEditForm({ camper, staffName, onDone }: { camper: CamperDoc; staffName: string; onDone: () => void }) {
+  const adminEdit = useMutation(api.campers.adminEdit);
+  const [form, setForm] = useState({
+    preferredName: camper.preferredName ?? camper.name,
+    lastName: camper.lastName ?? "",
+    bunk: camper.bunk,
+    code: camper.code,
+    grade: camper.grade ?? "",
+    arrivalMethod: camper.arrivalMethod ?? "",
+    dismissalMethod: camper.dismissalMethod ?? "",
+    photoUrl: camper.photoUrl ?? "",
+    allergyNotes: camper.allergyDetails ?? "",
+    camperNotes: camper.camperNotes ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    const safetyFields = ["code", "dismissalMethod", "allergyNotes"];
+    const changed = safetyFields.filter(k => (form as Record<string, string>)[k] !== ((camper as Record<string, unknown>)[k === "allergyNotes" ? "allergyDetails" : k] ?? ""));
+    if (changed.length > 0) {
+      const msg = changed.map(k => k === "code" ? "pickup code" : k === "dismissalMethod" ? "dismissal method" : "allergy notes").join(", ");
+      if (!confirm(`You are changing: ${msg}.\n\nThis affects camper safety. Continue?`)) return;
+    }
+    setSaving(true);
+    await adminEdit({
+      id: camper._id,
+      staffName,
+      preferredName: form.preferredName.trim() || undefined,
+      lastName: form.lastName.trim() || undefined,
+      bunk: form.bunk.trim() || undefined,
+      code: form.code.trim() || undefined,
+      grade: form.grade.trim() || undefined,
+      arrivalMethod: form.arrivalMethod || undefined,
+      dismissalMethod: form.dismissalMethod || undefined,
+      photoUrl: form.photoUrl.trim() || undefined,
+      allergyNotes: form.allergyNotes,
+      camperNotes: form.camperNotes,
+    });
+    setSaving(false);
+    onDone();
+  };
+
+  const field = (label: string, key: keyof typeof form, opts?: { mono?: boolean }) => (
+    <div>
+      <label className="text-xs font-semibold text-slate-500 mb-1 block">{label}</label>
+      <input value={form[key]} onChange={e => setForm({ ...form, [key]: e.target.value })}
+        className={`w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none ${opts?.mono ? "font-mono" : ""}`} />
+    </div>
+  );
+
+  const select = (label: string, key: keyof typeof form, options: string[]) => (
+    <div>
+      <label className="text-xs font-semibold text-slate-500 mb-1 block">{label}</label>
+      <select value={form[key]} onChange={e => setForm({ ...form, [key]: e.target.value })}
+        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none bg-white">
+        <option value="">— none —</option>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+
+  return (
+    <div className="space-y-3">
+      <SectionLabel>Edit Camper Info</SectionLabel>
+      <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          {field("Preferred Name", "preferredName")}
+          {field("Last Name", "lastName")}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {field("Group", "bunk")}
+          {field("Grade", "grade")}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {field("Pickup Code", "code", { mono: true })}
+          {field("Photo URL", "photoUrl")}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          {select("Arrival Method", "arrivalMethod", ARRIVAL_OPTIONS)}
+          {select("Dismissal Method", "dismissalMethod", DISMISSAL_OPTIONS)}
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-500 mb-1 block">Allergy Notes</label>
+          <textarea value={form.allergyNotes} onChange={e => setForm({ ...form, allergyNotes: e.target.value })}
+            rows={2} placeholder="Leave blank if no allergies"
+            className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none resize-none" />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-500 mb-1 block">Camper Notes</label>
+          <textarea value={form.camperNotes} onChange={e => setForm({ ...form, camperNotes: e.target.value })}
+            rows={2} placeholder="Leave blank if no notes"
+            className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none resize-none" />
+        </div>
+        <div className="flex gap-2">
+          <button onClick={onDone}
+            className="flex-1 py-2.5 text-sm font-semibold text-slate-500 bg-slate-100 rounded-xl active:bg-slate-200">
+            Cancel
+          </button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-1 py-2.5 text-sm font-bold text-white rounded-xl active:opacity-80 disabled:opacity-40"
+            style={{ backgroundColor: "#023B64" }}>
+            {saving ? "Saving…" : "Save Changes"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Counselor View ───────────────────────────────────────────────────────────
 
 function CounselorView({ staff }: { staff: StaffDoc }) {
@@ -1001,17 +1134,17 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
   );
 }
 
-type BunkGroupKey = "none" | "status" | "transport";
+type BunkGroupKey = "none" | "status" | "dismissal";
 
 const BUNK_GROUP_OPTIONS: { key: BunkGroupKey; label: string }[] = [
   { key: "none",      label: "All" },
   { key: "status",    label: "In / Out" },
-  { key: "transport", label: "Transport" },
+  { key: "dismissal", label: "Dismissal" },
 ];
 
 const STATUS_GROUP_ORDER = ["In", "Out", "Not Yet In", "Absent"];
 
-type BunkRosterItem = { c: CamperDoc; isAbsent: boolean; arrived: boolean; dismissed: boolean };
+type BunkRosterItem = { c: CamperDoc; isAbsent: boolean; arrived: boolean; dismissed: boolean; effectiveDismissal?: string };
 
 function bunkGroupKey(item: BunkRosterItem, groupBy: BunkGroupKey): string {
   const { c, isAbsent, arrived, dismissed } = item;
@@ -1021,10 +1154,8 @@ function bunkGroupKey(item: BunkRosterItem, groupBy: BunkGroupKey): string {
       if (dismissed) return "Out";
       if (arrived) return "In";
       return "Not Yet In";
-    case "transport":
-      if (c.busRoute) return `Bus · ${c.busRoute}`;
-      if (c.transportationType) return TRANSPORT_LABEL[c.transportationType] ?? "Other";
-      return "Other";
+    case "dismissal":
+      return item.effectiveDismissal ?? c.dismissalMethod ?? "Other";
     default:
       return "";
   }
@@ -1048,12 +1179,12 @@ function CounselorBunkView({ staff, bunk }: {
   bunk: string;
 }) {
   const roster        = useQuery(api.campers.getBunkRoster, bunk ? { bunk } : "skip");
+  const todayOverrides = useQuery(api.dailyOverrides.getForDate, {});
   const setArrived    = useMutation(api.campers.confirmWithBunk);
   const setNotArrived = useMutation(api.campers.unconfirmWithBunk);
   const setOut        = useMutation(api.campers.markLeftEarly);
   const setNotOut     = useMutation(api.campers.undoLeftEarly);
   const [selected,  setSelected]  = useState<CamperDoc | null>(null);
-  const [flagsOpen, setFlagsOpen] = useState(false);
   const [groupBy, setGroupBy] = useState<BunkGroupKey>("none");
 
   const isAdmin = [staff.role, ...(staff.extraRoles ?? [])].some(r => r === "admin" || r === "director");
@@ -1065,28 +1196,39 @@ function CounselorBunkView({ staff, bunk }: {
   );
   if (roster === undefined) return <Loading />;
 
+  // Build override lookup by camperId
+  const overrideMap = new Map<string, NonNullable<typeof todayOverrides>[number]>();
+  for (const o of todayOverrides ?? []) overrideMap.set(o.camperId, o);
+
   const sorted = [...roster].sort((a, b) => camperName(a).localeCompare(camperName(b)));
 
-  // Only admin can mark absent — counselor Out without In is just Out, not absent.
   const items: BunkRosterItem[] = sorted.map(c => {
-    const isAbsent  = c.arrivalStatus === "Absent";
+    const ov = overrideMap.get(c._id);
+    const isAbsent  = ov?.isAbsent === true || c.arrivalStatus === "Absent";
     const arrived   = !!c.bunkConfirmed;
     const dismissed = !!c.leftEarly;
-    return { c, isAbsent, arrived, dismissed };
+    const effectiveDismissal = ov?.afternoonDismissal ?? c.dismissalMethod;
+    return { c, isAbsent, arrived, dismissed, effectiveDismissal };
   });
 
-  const inCount      = sorted.filter(c => c.bunkConfirmed === true && c.leftEarly !== true).length;
-  const outCount     = sorted.filter(c => c.leftEarly === true).length;
-  const notInCount   = sorted.filter(c => c.bunkConfirmed !== true && c.leftEarly !== true).length;
+  const isAbsentToday = (c: CamperDoc) => {
+    const ov = overrideMap.get(c._id);
+    return ov?.isAbsent === true || c.arrivalStatus === "Absent";
+  };
+
+  const absentCount  = sorted.filter(c => isAbsentToday(c)).length;
+  const inCount      = sorted.filter(c => !isAbsentToday(c) && c.bunkConfirmed === true && c.leftEarly !== true).length;
+  const outCount     = sorted.filter(c => !isAbsentToday(c) && c.leftEarly === true).length;
+  const notInCount   = sorted.filter(c => !isAbsentToday(c) && c.bunkConfirmed !== true && c.leftEarly !== true).length;
   const called       = roster.filter(c => c.status === "Called" || c.status === "Assigned");
 
   const toggleAM = (c: CamperDoc) => {
-    if (c.arrivalStatus === "Absent") return;
+    if (isAbsentToday(c)) return;
     if (c.bunkConfirmed) setNotArrived({ id: c._id });
     else                 setArrived({ id: c._id, staffName: staff.name });
   };
   const toggleOut = (c: CamperDoc) => {
-    if (c.arrivalStatus === "Absent") return;
+    if (isAbsentToday(c)) return;
     if (c.leftEarly) setNotOut({ id: c._id });
     else             setOut({ id: c._id, staffName: staff.name });
   };
@@ -1096,22 +1238,14 @@ function CounselorBunkView({ staff, bunk }: {
   return (
     <>
       <div className="space-y-4">
-        {/* Header + admin gear */}
-        <div className="flex items-center justify-between">
-          <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{bunk}</h2>
-          {isAdmin && (
-            <button onClick={() => setFlagsOpen(true)}
-              className="p-2 rounded-xl text-slate-500 active:bg-slate-100" aria-label="Daily flags">
-              <Settings size={20} />
-            </button>
-          )}
-        </div>
+        <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{bunk}</h2>
 
         {/* Summary strip */}
         <div className="flex gap-2">
-          <Pill value={inCount}    label="In"     color="green" />
-          <Pill value={notInCount} label="Not In" color="slate" />
-          <Pill value={outCount}   label="Out"    color="blue" />
+          <Pill value={inCount}      label="In"     color="green" />
+          <Pill value={notInCount}   label="Not In" color="slate" />
+          <Pill value={outCount}     label="Out"    color="blue" />
+          {absentCount > 0 && <Pill value={absentCount} label="Absent" color="amber" />}
         </div>
         <p className="text-xs text-slate-500 text-center -mt-1">
           {sorted.length} enrolled
@@ -1164,6 +1298,7 @@ function CounselorBunkView({ staff, bunk }: {
             <div className="space-y-2">
               {groupItems.map(({ c, isAbsent, arrived, dismissed }) => (
                 <BunkCamperRow key={c._id} camper={c} isAbsent={isAbsent} arrived={arrived} dismissed={dismissed}
+                  override={overrideMap.get(c._id)}
                   onOpenProfile={() => setSelected(c)}
                   onToggleAM={() => toggleAM(c)}
                   onToggleOut={() => toggleOut(c)}
@@ -1175,17 +1310,17 @@ function CounselorBunkView({ staff, bunk }: {
       </div>
 
       {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode staffName={staff.name} isAdmin={isAdmin} />}
-      {flagsOpen && <DailyFlagsPanel campers={sorted} bunk={bunk} staffName={staff.name} onClose={() => setFlagsOpen(false)} />}
     </>
   );
 }
 
 // One roster row: identity + transport/flags inline, plus In / Out tap targets.
-function BunkCamperRow({ camper, isAbsent, arrived, dismissed, onOpenProfile, onToggleAM, onToggleOut }: {
+function BunkCamperRow({ camper, isAbsent, arrived, dismissed, override, onOpenProfile, onToggleAM, onToggleOut }: {
   camper: CamperDoc;
   isAbsent: boolean;
   arrived: boolean;
   dismissed: boolean;
+  override?: { isAbsent?: boolean; lateDropoffTime?: string; earlyPickupTime?: string; morningArrival?: string; afternoonDismissal?: string; note?: string };
   onOpenProfile: () => void;
   onToggleAM: () => void;
   onToggleOut: () => void;
@@ -1193,12 +1328,6 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, onOpenProfile, on
   const name = camperName(camper);
   const bg = avatarBg(camper.name);
   const isCalled  = camper.status === "Called" || camper.status === "Assigned";
-  const presence  = getCampusPresence(camper);
-
-  const PRESENCE_STYLE: Record<CampusPresence, string> = {
-    Here:    "text-green-700",
-    NotHere: "text-slate-500",
-  };
 
   return (
     <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${
@@ -1220,21 +1349,31 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, onOpenProfile, on
             {camper.hasAllergies && (
               <span className="text-[10px] font-bold text-red-700 bg-red-100 px-1.5 py-0.5 rounded-full tracking-wide">ALLERGY</span>
             )}
+            {camper.dismissalMethod && (
+              <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded-full tracking-wide">
+                {camper.dismissalMethod}
+              </span>
+            )}
+            {override?.isAbsent && (
+              <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Absent</span>
+            )}
+            {override?.lateDropoffTime && (
+              <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">Late: {fmtClock(override.lateDropoffTime)}</span>
+            )}
+            {override?.earlyPickupTime && (
+              <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">Early: {fmtClock(override.earlyPickupTime)}</span>
+            )}
+            {override?.afternoonDismissal && (
+              <span className="text-[10px] font-bold text-violet-700 bg-violet-100 px-1.5 py-0.5 rounded-full">Dismissal: {camper.dismissalMethod ?? "?"} → {override.afternoonDismissal}</span>
+            )}
+            {override?.morningArrival && (
+              <span className="text-[10px] font-bold text-green-700 bg-green-100 px-1.5 py-0.5 rounded-full">Arrival: {camper.arrivalMethod ?? "?"} → {override.morningArrival}</span>
+            )}
+            {override?.note && (
+              <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full flex items-center gap-0.5"><StickyNote size={9} />{override.note}</span>
+            )}
             {isCalled && <StatusBadge status={camper.status} />}
           </div>
-          {(camper.busRoute || camper.transportationType) && (
-            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-              {camper.busRoute ? (
-                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                  {camper.busRoute}
-                </span>
-              ) : camper.transportationType && (
-                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                  {TRANSPORT_LABEL[camper.transportationType]}
-                </span>
-              )}
-            </div>
-          )}
         </div>
         <ArrowRight size={16} className="text-slate-300 flex-shrink-0" />
       </button>
@@ -1275,7 +1414,7 @@ function DailyFlagsPanel({ campers, bunk, staffName, onClose }: {
       <div className="sheet-slide-up relative bg-white rounded-t-3xl flex flex-col max-h-[92dvh] overflow-hidden">
         <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-slate-100 flex-shrink-0">
           <div>
-            <h3 className="text-lg font-bold text-slate-900">Daily Flags</h3>
+            <h3 className="text-lg font-bold text-slate-900">Today&apos;s Changes</h3>
             <p className="text-xs text-slate-500">{bunk} · set before camp starts</p>
           </div>
           <button onClick={onClose} className="w-9 h-9 bg-slate-100 rounded-full flex items-center justify-center active:bg-slate-200">
@@ -1290,43 +1429,98 @@ function DailyFlagsPanel({ campers, bunk, staffName, onClose }: {
   );
 }
 
-function FlagEditor({ camper, staffName }: { camper: CamperDoc; staffName: string }) {
-  const setAbsent = useMutation(api.campers.setAbsent);
-  const setLate   = useMutation(api.campers.setLateDropoff);
-  const setEarly  = useMutation(api.campers.setEarlyPickup);
-  const saveNote  = useMutation(api.campers.setAttendanceNote);
+function FlagEditor({ camper, staffName, onClose }: { camper: CamperDoc; staffName: string; onClose?: () => void }) {
+  const upsertOverride = useMutation(api.dailyOverrides.upsert);
+  const [date, setDate] = useState(today());
+  const override = useQuery(api.dailyOverrides.getForCamper, { camperId: camper._id, date });
 
-  const isAbsent = camper.arrivalStatus === "Absent";
-  const [note, setNote] = useState(camper.attendanceNote ?? "");
+  const isAbsent = override?.isAbsent === true;
+  const [note, setNote] = useState(override?.note ?? "");
+  const [late, setLate] = useState(override?.lateDropoffTime ?? "");
+  const [early, setEarly] = useState(override?.earlyPickupTime ?? "");
+
+  useEffect(() => {
+    setNote(override?.note ?? "");
+    setLate(override?.lateDropoffTime ?? "");
+    setEarly(override?.earlyPickupTime ?? "");
+  }, [override?.note, override?.lateDropoffTime, override?.earlyPickupTime]);
+
+  const save = (fields: Record<string, unknown>) =>
+    upsertOverride({ camperId: camper._id, staffName, date, ...fields } as Parameters<typeof upsertOverride>[0]);
 
   return (
     <div className="border border-slate-200 rounded-2xl p-3 space-y-2.5">
       <div className="flex items-center justify-between gap-2">
         <span className="font-semibold text-slate-900 truncate">{camperName(camper)}</span>
-        <button onClick={() => setAbsent({ id: camper._id, absent: !isAbsent, staffName })}
+        <input type="date" value={date} onChange={e => setDate(e.target.value)}
+          className="text-xs border border-slate-200 rounded-lg px-2 py-1 focus:outline-none" />
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-slate-400">{date === today() ? "Today" : date}</span>
+        <button onClick={() => save({ isAbsent: !isAbsent })}
           className={`text-xs font-bold px-3 py-1.5 rounded-full flex-shrink-0 ${isAbsent ? "bg-red-500 text-white" : "bg-slate-100 text-slate-500 active:bg-slate-200"}`}>
           {isAbsent ? "Absent" : "Mark Absent"}
         </button>
       </div>
       <div className="grid grid-cols-2 gap-2">
         <label className="text-xs font-medium text-slate-500 block">
-          Late drop-off
-          <input type="time" defaultValue={camper.lateDropoffTime ?? ""}
-            onChange={e => setLate({ id: camper._id, time: e.target.value })}
+          Late arrival
+          <input type="time" value={late}
+            onChange={e => { setLate(e.target.value); save({ lateDropoffTime: e.target.value || undefined }); }}
             className="mt-1 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none" />
         </label>
         <label className="text-xs font-medium text-slate-500 block">
           Early pickup
-          <input type="time" defaultValue={camper.earlyPickupTime ?? ""}
-            onChange={e => setEarly({ id: camper._id, time: e.target.value })}
+          <input type="time" value={early}
+            onChange={e => { setEarly(e.target.value); save({ earlyPickupTime: e.target.value || undefined }); }}
             className="mt-1 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none" />
+        </label>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-xs font-medium text-slate-500 block">
+          Arrival override
+          <select value={override?.morningArrival ?? ""}
+            onChange={e => {
+              const val = e.target.value || undefined;
+              if (val && date === today() && (camper.arrivalStatus === "Arrived" || camper.bunkConfirmed)) {
+                if (!confirm("This camper already arrived today. Change arrival method anyway?")) return;
+              }
+              save({ morningArrival: val });
+            }}
+            className="mt-1 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none bg-white">
+            <option value="">No change</option>
+            {ARRIVAL_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+          {camper.arrivalMethod && <p className="text-[10px] text-slate-400 mt-0.5">Normal: {camper.arrivalMethod}</p>}
+        </label>
+        <label className="text-xs font-medium text-slate-500 block">
+          Dismissal override
+          <select value={override?.afternoonDismissal ?? ""}
+            onChange={e => {
+              const val = e.target.value || undefined;
+              if (val && date === today() && camper.status !== "Waiting") {
+                if (!confirm("This camper has dismissal activity today. Change dismissal method anyway?")) return;
+              }
+              save({ afternoonDismissal: val });
+            }}
+            className="mt-1 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none bg-white">
+            <option value="">No change</option>
+            {DISMISSAL_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+          {camper.dismissalMethod && <p className="text-[10px] text-slate-400 mt-0.5">Normal: {camper.dismissalMethod}</p>}
         </label>
       </div>
       <input value={note}
         onChange={e => setNote(e.target.value)}
-        onBlur={() => saveNote({ id: camper._id, note })}
-        placeholder="Note (optional)"
+        onBlur={() => save({ note: note.trim() || undefined })}
+        placeholder="Daily note (optional)"
         className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none" />
+      {onClose && (
+        <button onClick={onClose}
+          className="w-full py-2 text-xs font-semibold text-slate-500 bg-slate-50 rounded-lg active:bg-slate-100 mt-1">
+          Done
+        </button>
+      )}
     </div>
   );
 }
@@ -1611,22 +1805,78 @@ function InOutCamperRow({
 // ─── Before / After Care ──────────────────────────────────────────────────────
 
 function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "AfterCare" }) {
-  const roster = useQuery(kind === "BeforeCare" ? api.campers.getBeforeCareRoster : api.campers.getAfterCareRoster, {});
-  if (roster === undefined) return <Loading />;
+  const normalRoster = useQuery(kind === "BeforeCare" ? api.campers.getBeforeCareRoster : api.campers.getAfterCareRoster, {});
+  const allCampers   = useQuery(api.campers.list);
+  const overrides    = useQuery(api.dailyOverrides.getForDate, {});
+  if (normalRoster === undefined || allCampers === undefined) return <Loading />;
 
   const title = kind === "BeforeCare" ? "Before Care" : "After Care";
   const outLabel = kind === "BeforeCare" ? "Out to Bunk" : "Picked Up";
+  const matchField = kind === "BeforeCare" ? "morningArrival" : "afternoonDismissal";
+  const matchValue = kind === "BeforeCare" ? "Before Care" : "After Care";
+  const normalField = kind === "BeforeCare" ? "arrivalMethod" : "dismissalMethod";
+
+  const overrideMap = new Map<string, NonNullable<typeof overrides>[number]>();
+  for (const o of overrides ?? []) overrideMap.set(o.camperId, o);
+
+  const normalIds = new Set(normalRoster.map(c => c._id));
+
+  // Campers overridden INTO this care today (not normally here)
+  const addedToday = (allCampers ?? []).filter(c => {
+    if (normalIds.has(c._id)) return false;
+    const ov = overrideMap.get(c._id);
+    return ov?.[matchField] === matchValue;
+  });
+
+  // Campers overridden OUT of this care today (normally here)
+  const removedToday = normalRoster.filter(c => {
+    const ov = overrideMap.get(c._id);
+    return ov?.[matchField] && ov[matchField] !== matchValue;
+  });
+
+  const removedIds = new Set(removedToday.map(c => c._id));
+  const activeRoster = normalRoster.filter(c => !removedIds.has(c._id));
+  const todayRoster = [...activeRoster, ...addedToday];
+
   return (
     <div className="space-y-4">
       <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{title}</h2>
+
+      {removedToday.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-bold text-amber-600 uppercase tracking-wider px-1">Removed Today</p>
+          {removedToday.map(c => {
+            const ov = overrideMap.get(c._id);
+            return (
+              <div key={c._id} className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex items-center gap-3 opacity-70">
+                <span className="font-semibold text-slate-700 text-sm">{camperName(c)}</span>
+                <span className="text-xs text-amber-700">→ now {ov?.[matchField]}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {addedToday.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-bold text-green-600 uppercase tracking-wider px-1">Added Today</p>
+          {addedToday.map(c => (
+            <div key={c._id} className="bg-green-50 border border-green-200 rounded-2xl px-4 py-3 flex items-center gap-3">
+              <span className="font-semibold text-slate-700 text-sm">{camperName(c)}</span>
+              <span className="text-xs text-green-700">normally {(c as Record<string, unknown>)[normalField] as string ?? "—"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <InOutRosterView
-        campers={roster}
+        campers={todayRoster}
         checkpoint={kind}
         staffName={staff.name}
         inLabel="Mark In"
         outLabel={outLabel}
         groupLabel={title}
-        emptyMessage={`No campers are enrolled in ${title}.`}
+        emptyMessage={`No campers expected in ${title} today.`}
       />
     </div>
   );
@@ -1636,13 +1886,39 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
 
 function BusView({ staff }: { staff: StaffDoc }) {
   const [route, setRoute] = useState(staff.groupAssignment ?? BUS_ROUTES[0]);
-  const roster = useQuery(api.campers.getBusRoster, { route });
+  const roster     = useQuery(api.campers.getBusRoster, { route });
+  const allCampers = useQuery(api.campers.list);
+  const overrides  = useQuery(api.dailyOverrides.getForDate, {});
+
+  const overrideMap = new Map<string, NonNullable<typeof overrides>[number]>();
+  for (const o of overrides ?? []) overrideMap.set(o.camperId, o);
+
+  const normalIds = new Set((roster ?? []).map(c => c._id));
+
+  // Campers overridden INTO this bus today
+  const addedToday = (allCampers ?? []).filter(c => {
+    if (normalIds.has(c._id)) return false;
+    const ov = overrideMap.get(c._id);
+    return ov?.morningArrival === route || ov?.afternoonDismissal === route;
+  });
+
+  // Campers overridden OUT of this bus today
+  const removedToday = (roster ?? []).filter(c => {
+    const ov = overrideMap.get(c._id);
+    if (!ov) return false;
+    const arrivalStays = (c.arrivalMethod === route && !ov.morningArrival) || ov.morningArrival === route;
+    const dismissalStays = (c.dismissalMethod === route && !ov.afternoonDismissal) || ov.afternoonDismissal === route;
+    return !arrivalStays && !dismissalStays;
+  });
+
+  const removedIds = new Set(removedToday.map(c => c._id));
+  const activeRoster = (roster ?? []).filter(c => !removedIds.has(c._id));
+  const todayRoster = [...activeRoster, ...addedToday];
 
   return (
     <div className="space-y-4">
       <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{route}</h2>
 
-      {/* Bus selector */}
       <div className="flex gap-1.5 overflow-x-auto pb-1">
         {BUS_ROUTES.map(r => (
           <button key={r} onClick={() => setRoute(r)}
@@ -1653,15 +1929,43 @@ function BusView({ staff }: { staff: StaffDoc }) {
         ))}
       </div>
 
+      {removedToday.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-bold text-amber-600 uppercase tracking-wider px-1">Removed from {route} Today</p>
+          {removedToday.map(c => {
+            const ov = overrideMap.get(c._id);
+            const newMethod = ov?.morningArrival || ov?.afternoonDismissal || "?";
+            return (
+              <div key={c._id} className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex items-center gap-3 opacity-70">
+                <span className="font-semibold text-slate-700 text-sm">{camperName(c)}</span>
+                <span className="text-xs text-amber-700">→ now {newMethod}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {addedToday.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-bold text-green-600 uppercase tracking-wider px-1">Added to {route} Today</p>
+          {addedToday.map(c => (
+            <div key={c._id} className="bg-green-50 border border-green-200 rounded-2xl px-4 py-3 flex items-center gap-3">
+              <span className="font-semibold text-slate-700 text-sm">{camperName(c)}</span>
+              <span className="text-xs text-green-700">normally {c.arrivalMethod === route ? c.arrivalMethod : c.dismissalMethod ?? "—"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {roster === undefined ? <Loading /> : (
         <InOutRosterView
-          campers={roster}
+          campers={todayRoster}
           checkpoint="Bus"
           staffName={staff.name}
           inLabel="Boarded"
           outLabel="Dropped Off"
           groupLabel={route}
-          emptyMessage={`No campers assigned to ${route}.`}
+          emptyMessage={`No campers assigned to ${route} today.`}
         />
       )}
     </div>
@@ -2071,19 +2375,29 @@ function RunnerAdminView() {
 
 // ─── Admin ────────────────────────────────────────────────────────────────────
 
+type AdminTab = "campers" | "changes";
+
 function Admin() {
+  const [tab, setTab] = useState<AdminTab>("campers");
   const [q, setQ]       = useState("");
   const [selected, setSelected] = useState<CamperDoc | null>(null);
   const campers         = useQuery(api.campers.list);
+  const todayOverrides  = useQuery(api.dailyOverrides.getForDate, {});
+  const upcomingOverrides = useQuery(api.dailyOverrides.getUpcoming, { fromDate: today() });
   const clearDailyState = useMutation(api.campers.clearDailyState);
+  const clearForDate    = useMutation(api.dailyOverrides.clearForDate);
 
-  const counts = useMemo(() => {
-    const c: Record<string, number> = { Waiting:0, Called:0, Assigned:0, "Picked Up":0, Dismissed:0 };
-    campers?.forEach(x => { c[x.status]++; });
-    return c;
-  }, [campers]);
+  const totalChanges = ((todayOverrides ?? []).length) + ((upcomingOverrides ?? []).filter(o => o.date > today()).length);
+  const adminTabs: { id: AdminTab; label: string }[] = [
+    { id: "campers", label: "Campers" },
+    { id: "changes", label: "Changes" },
+  ];
 
   if (campers === undefined) return <Loading />;
+
+  // Build camper lookup for override views
+  const camperMap = new Map<string, CamperDoc>();
+  for (const c of campers) camperMap.set(c._id, c);
 
   const filtered = campers.filter(c => {
     const s = q.toLowerCase();
@@ -2093,17 +2407,14 @@ function Admin() {
       || (c.lastName ?? "").toLowerCase().includes(s)
       || c.bunk.toLowerCase().includes(s)
       || c.code.includes(s)
-      || (c.runner ?? "").toLowerCase().includes(s)
-      || c.status.toLowerCase().includes(s)
-      || (c.unit ?? "").toLowerCase().includes(s)
-      || (c.camp ?? "").toLowerCase().includes(s)
-      || (c.campSection ?? "").toLowerCase().includes(s);
+      || (c.arrivalMethod ?? "").toLowerCase().includes(s)
+      || (c.dismissalMethod ?? "").toLowerCase().includes(s);
   });
 
   return (
     <>
-      <div>
-        <div className="flex items-center gap-2 mb-5">
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
           <Settings size={22} className="text-slate-700" />
           <h2 className="text-xl font-bold text-slate-900">Admin</h2>
           <button onClick={() => {
@@ -2112,72 +2423,229 @@ function Admin() {
             }
           }}
             className="ml-auto flex items-center gap-1.5 text-sm bg-red-50 text-red-600 px-3 py-2 rounded-xl active:bg-red-100 font-semibold">
-            <RotateCcw size={15} /> Start New Day
+            <RotateCcw size={15} /> New Day
           </button>
         </div>
 
-        <div className="grid grid-cols-5 gap-2 mb-5">
-          {STATUSES.map(s => (
-            <div key={s} className="bg-white rounded-xl border border-slate-200 p-2 text-center shadow-sm">
-              <p className="text-xl font-bold text-slate-900">{counts[s]}</p>
-              <p className="text-[10px] text-slate-400 mt-0.5 leading-tight">{s}</p>
-            </div>
+        {/* Sub-tabs */}
+        <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5">
+          {adminTabs.map(t => (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors"
+              style={tab === t.id ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
+              {t.label}
+              {t.id === "changes" && totalChanges > 0 && (
+                <span className="ml-1 text-[10px] bg-white/20 px-1.5 py-0.5 rounded-full">{totalChanges}</span>
+              )}
+            </button>
           ))}
         </div>
 
-        <div className="relative mb-3">
-          <Search size={17} className="absolute left-3.5 top-3.5 text-slate-400" />
-          <input value={q} onChange={e => setQ(e.target.value)}
-            placeholder="Search name, bunk, code…"
-            className="w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl focus:outline-none text-sm"
-            onFocus={e => (e.currentTarget.style.borderColor = "#023B64")}
-            onBlur={e => (e.currentTarget.style.borderColor = "")} />
-        </div>
+        {/* ── Campers Tab ── */}
+        {tab === "campers" && (
+          <>
+            <div className="relative">
+              <Search size={17} className="absolute left-3.5 top-3.5 text-slate-400" />
+              <input value={q} onChange={e => setQ(e.target.value)}
+                placeholder="Search name, group, code…"
+                className="w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl focus:outline-none text-sm bg-white"
+                onFocus={e => (e.currentTarget.style.borderColor = "#023B64")}
+                onBlur={e => (e.currentTarget.style.borderColor = "")} />
+            </div>
 
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-slate-500 text-left">
-                <tr>
-                  {["Camper","Bunk","Code","Transport","Arr","Conf","Runner","Status"].map(h => (
-                    <th key={h} className="px-3 py-2.5 font-semibold whitespace-nowrap">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map(c => (
-                  <tr key={c._id} onClick={() => setSelected(c)}
-                    className="border-t border-slate-100 active:bg-slate-50 cursor-pointer">
-                    <td className="px-3 py-2.5 font-semibold text-slate-900 whitespace-nowrap">
-                      <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 overflow-hidden"
-                          style={{ backgroundColor: avatarBg(c.name) }}>
-                          {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
-                        </div>
-                        {c.preferredName ?? c.name}
-                        {c.hasAllergies && <AlertTriangle size={11} className="text-orange-500" />}
+            <p className="text-xs text-slate-400">{filtered.length} of {campers.length} campers</p>
+
+            <div className="space-y-2">
+              {filtered.map(c => {
+                const name = c.preferredName ? `${c.preferredName}${c.lastName ? " " + c.lastName : ""}` : c.name;
+                return (
+                  <button key={c._id} onClick={() => setSelected(c)}
+                    className="w-full text-left bg-white border border-slate-200 rounded-2xl px-4 py-3 flex items-center gap-3 active:bg-slate-50">
+                    <div className="w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center text-white font-bold text-sm overflow-hidden"
+                      style={{ backgroundColor: avatarBg(c.name) }}>
+                      {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-semibold text-slate-900 text-sm">{name}</span>
+                        {c.hasAllergies && <span className="text-[10px] font-bold text-red-700 bg-red-100 px-1.5 py-0.5 rounded-full">ALLERGY</span>}
+                        {c.dismissalMethod && <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded-full">{c.dismissalMethod}</span>}
                       </div>
-                    </td>
-                    <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{c.bunk}</td>
-                    <td className="px-3 py-2.5 text-slate-600 font-mono">{c.code}</td>
-                    <td className="px-3 py-2.5">
-                      {c.transportationType
-                        ? <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${TRANSPORT_STYLE[c.transportationType]}`}>{TRANSPORT_LABEL[c.transportationType]}</span>
-                        : <span className="text-slate-300">—</span>}
-                    </td>
-                    <td className="px-3 py-2.5 text-center">{(c.arrivalStatus === "Arrived" || c.bunkConfirmed) ? <span className="text-green-500 font-bold">✓</span> : <span className="text-slate-200">—</span>}</td>
-                    <td className="px-3 py-2.5 text-center">{c.bunkConfirmed ? <span className="text-blue-500 font-bold">✓</span> : <span className="text-slate-200">—</span>}</td>
-                    <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{c.runner ?? "—"}</td>
-                    <td className="px-3 py-2.5"><StatusBadge status={c.status} /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+                      <p className="text-xs text-slate-500 mt-0.5">{c.bunk} · #{c.code}</p>
+                    </div>
+                    <ChevronRight size={16} className="text-slate-300 flex-shrink-0" />
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {/* ── Changes Tab (today + upcoming combined) ── */}
+        {tab === "changes" && (
+          <AdminTodayChanges
+            overrides={todayOverrides ?? []}
+            futureOverrides={(upcomingOverrides ?? []).filter(o => o.date > today())}
+            camperMap={camperMap}
+            campers={campers}
+            onSelectCamper={setSelected}
+          />
+        )}
       </div>
-      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} />}
+
+      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} staffName="Admin" isAdmin />}
     </>
+  );
+}
+
+// ─── Admin Today's Changes ──────────────────────────────────────────────────
+
+function AdminTodayChanges({ overrides, futureOverrides, camperMap, campers, onSelectCamper }: {
+  overrides: Doc<"dailyOverrides">[];
+  futureOverrides: Doc<"dailyOverrides">[];
+  camperMap: Map<string, CamperDoc>;
+  campers: CamperDoc[];
+  onSelectCamper: (c: CamperDoc) => void;
+}) {
+  const upsertOverride = useMutation(api.dailyOverrides.upsert);
+  const clearOne       = useMutation(api.dailyOverrides.clearOne);
+  const [adding, setAdding] = useState(false);
+  const [addCamperId, setAddCamperId] = useState("");
+  const [addSearch, setAddSearch] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  const handleAdd = (camperId: string) => {
+    setAddCamperId(camperId);
+    setAdding(true);
+    setAddSearch("");
+  };
+
+  const filteredCampers = addSearch.trim()
+    ? campers.filter(c => {
+        const s = addSearch.toLowerCase();
+        const name = `${c.preferredName ?? c.name} ${c.lastName ?? ""}`.toLowerCase();
+        return name.includes(s) || c.bunk.toLowerCase().includes(s) || c.code.includes(s);
+      }).slice(0, 8)
+    : [];
+
+  return (
+    <div className="space-y-4">
+      {/* Add new override */}
+      {!adding && (
+        <div className="space-y-2">
+          <div className="relative">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input value={addSearch} onChange={e => setAddSearch(e.target.value)}
+              placeholder="Search camper to add today's change…"
+              className="w-full pl-9 pr-3 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none" />
+          </div>
+          {filteredCampers.length > 0 && (
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              {filteredCampers.map(c => {
+                const name = c.preferredName ? `${c.preferredName}${c.lastName ? " " + c.lastName : ""}` : c.name;
+                return (
+                  <button key={c._id} onClick={() => handleAdd(c._id)}
+                    className="w-full flex items-center gap-3 px-4 py-2.5 text-left border-b border-slate-100 last:border-b-0 active:bg-slate-50">
+                    <span className="text-sm font-medium text-slate-900">{name}</span>
+                    <span className="text-xs text-slate-400">{c.bunk}</span>
+                    <span className="ml-auto text-xs font-semibold text-[#023B64]">+ Add</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Adding form */}
+      {adding && addCamperId && (() => {
+        const c = camperMap.get(addCamperId);
+        if (!c) return null;
+        return <FlagEditor camper={c} staffName="Admin" onClose={() => setAdding(false)} />;
+      })()}
+
+      {/* Existing overrides */}
+      <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{overrides.length} change{overrides.length !== 1 ? "s" : ""} today</p>
+
+      {overrides.length === 0 && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-slate-400">
+          No changes for today. Search a camper above to add one.
+        </div>
+      )}
+
+      {overrides.map(o => {
+        const c = camperMap.get(o.camperId);
+        if (!c) return null;
+        const name = c.preferredName ? `${c.preferredName}${c.lastName ? " " + c.lastName : ""}` : c.name;
+
+        if (editingId === o._id) {
+          return <FlagEditor key={o._id} camper={c} staffName="Admin" onClose={() => setEditingId(null)} />;
+        }
+
+        return (
+          <div key={o._id} className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="flex items-center gap-3 px-4 py-3">
+              <div className="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center text-white text-xs font-bold overflow-hidden"
+                style={{ backgroundColor: avatarBg(c.name) }}>
+                {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+              </div>
+              <div className="flex-1 min-w-0">
+                <span className="font-semibold text-slate-900 text-sm">{name}</span>
+                <p className="text-xs text-slate-400">{c.bunk}</p>
+              </div>
+              <button onClick={() => setEditingId(o._id)}
+                className="text-xs text-[#023B64] font-semibold px-2 py-1 rounded-lg active:bg-slate-50">
+                Edit
+              </button>
+              <button onClick={() => { if (confirm(`Clear today's change for ${name}?`)) clearOne({ camperId: c._id, staffName: "Admin" }); }}
+                className="text-xs text-red-400 font-semibold px-2 py-1 rounded-lg active:bg-red-50">
+                Clear
+              </button>
+            </div>
+            <div className="border-t border-slate-100 px-4 py-2.5 flex gap-1.5 flex-wrap">
+              {o.isAbsent && <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Absent</span>}
+              {o.lateDropoffTime && <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">Late: {fmtClock(o.lateDropoffTime)}</span>}
+              {o.earlyPickupTime && <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">Early: {fmtClock(o.earlyPickupTime)}</span>}
+              {o.afternoonDismissal && <span className="text-[10px] font-bold text-violet-700 bg-violet-100 px-1.5 py-0.5 rounded-full">Dismissal → {o.afternoonDismissal}</span>}
+              {o.morningArrival && <span className="text-[10px] font-bold text-green-700 bg-green-100 px-1.5 py-0.5 rounded-full">Arrival → {o.morningArrival}</span>}
+              {o.note && <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">{o.note}</span>}
+              {!o.isAbsent && !o.lateDropoffTime && !o.earlyPickupTime && !o.afternoonDismissal && !o.morningArrival && !o.note && (
+                <span className="text-xs text-slate-400">No changes set</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* ── Future Changes ── */}
+      {futureOverrides.length > 0 && (
+        <>
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mt-2">{futureOverrides.length} upcoming</p>
+          {futureOverrides.map(o => {
+            const c = camperMap.get(o.camperId);
+            if (!c) return null;
+            const name = c.preferredName ? `${c.preferredName}${c.lastName ? " " + c.lastName : ""}` : c.name;
+            return (
+              <div key={o._id} className="bg-white rounded-2xl border border-slate-200 px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-900 text-sm">{name}</span>
+                  <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{o.date}</span>
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">{c.bunk}</p>
+                <div className="flex gap-1.5 mt-1.5 flex-wrap">
+                  {o.isAbsent && <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Absent</span>}
+                  {o.lateDropoffTime && <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">Late: {fmtClock(o.lateDropoffTime)}</span>}
+                  {o.earlyPickupTime && <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">Early: {fmtClock(o.earlyPickupTime)}</span>}
+                  {o.afternoonDismissal && <span className="text-[10px] font-bold text-violet-700 bg-violet-100 px-1.5 py-0.5 rounded-full">Dismissal → {o.afternoonDismissal}</span>}
+                  {o.morningArrival && <span className="text-[10px] font-bold text-green-700 bg-green-100 px-1.5 py-0.5 rounded-full">Arrival → {o.morningArrival}</span>}
+                  {o.note && <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">{o.note}</span>}
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -2464,33 +2932,16 @@ function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
 // ─── Upload field map ─────────────────────────────────────────────────────────
 
 const CAMPER_FIELDS: { key: string; label: string; required: boolean; boolean?: boolean }[] = [
-  { key: "name",                     label: "First Name",                required: true  },
-  { key: "lastName",                 label: "Last Name",                 required: false },
-  { key: "preferredName",            label: "Preferred Name",            required: false },
-  { key: "bunk",                     label: "Bunk",                      required: true  },
-  { key: "code",                     label: "Safety Code",               required: true  },
-  { key: "grade",                    label: "Grade",                     required: false },
-  { key: "unit",                     label: "Unit",                      required: false },
-  { key: "campSection",              label: "Camp Section",              required: false },
-  { key: "camp",                     label: "Camp",                      required: false },
-  { key: "campDivision",             label: "Camp Division",             required: false },
-  { key: "transportationType",       label: "Transport Type",            required: false },
-  { key: "busRoute",                 label: "Bus Route",                 required: false },
-  { key: "beforeCare",               label: "Before Care",               required: false, boolean: true },
-  { key: "afterCare",                label: "After Care",                required: false, boolean: true },
-  { key: "hasAllergies",             label: "Has Allergies",             required: false, boolean: true },
-  { key: "allergyDetails",           label: "Allergy Details",           required: false },
-  { key: "hasNotes",                 label: "Has Notes",                 required: false, boolean: true },
-  { key: "defaultMorningArrival",    label: "Default Morning Arrival",   required: false },
-  { key: "defaultAfternoonDismissal",label: "Default Afternoon Dismissal",required: false },
-  { key: "photoUrl",                 label: "Photo URL",                 required: false },
-  { key: "period1Group",             label: "Period 1 Group",            required: false },
-  { key: "period2Group",             label: "Period 2 Group",            required: false },
-  { key: "period3Group",             label: "Period 3 Group",            required: false },
-  { key: "period4Group",             label: "Period 4 Group",            required: false },
-  { key: "period5Group",             label: "Period 5 Group",            required: false },
-  { key: "period6Group",             label: "Period 6 Group",            required: false },
-  { key: "period7Group",             label: "Period 7 Group",            required: false },
+  { key: "preferredName",   label: "Preferred Name",    required: true  },
+  { key: "lastName",        label: "Last Name",         required: false },
+  { key: "bunk",            label: "Group",             required: true  },
+  { key: "code",            label: "Safety Code",       required: true  },
+  { key: "arrivalMethod",   label: "Arrival Method",    required: true  },
+  { key: "dismissalMethod", label: "Dismissal Method",  required: true  },
+  { key: "grade",           label: "Grade",             required: false },
+  { key: "photoUrl",        label: "Photo URL",         required: false },
+  { key: "allergyNotes",    label: "Allergy Notes",     required: false },
+  { key: "camperNotes",     label: "Camper Notes",      required: false },
 ];
 
 const parseBool = (val: string) =>
@@ -2517,16 +2968,12 @@ const csvEscape = (val: unknown): string => {
 };
 
 const EXPORT_COLUMNS = [
-  "name","preferredName","lastName","photoUrl",
-  "bunk","unit","grade","campSection","camp","campDivision",
-  "code","transportationType","busRoute","beforeCare","afterCare",
-  "defaultMorningArrival","defaultAfternoonDismissal",
-  "hasAllergies","allergyDetails","hasNotes",
-  "arrivalStatus","arrivalType","bunkConfirmed","leftEarly","tLeftEarly",
-  "status","callSource","runner","tCalled","tAssigned","tPickedUp","tDismissed",
-  "attendanceNote","lateDropoffTime","earlyPickupTime",
-  "dailyArrivalOverride","dailyDismissalOverride",
-  "dailyCheckpoints","dailyCheckpointsOut","periodGroups","periodAttendance",
+  "preferredName","lastName","photoUrl",
+  "bunk","grade","code",
+  "arrivalMethod","dismissalMethod",
+  "allergyDetails","camperNotes",
+  "bunkConfirmed","leftEarly",
+  "status","runner",
   "exportDate","exportTime",
 ];
 
@@ -2595,13 +3042,20 @@ function CamperUpload() {
       const parsed = parseCsv(ev.target?.result as string);
       setCsvData(parsed);
       const PHOTO_ALIASES = ["photo", "camperphoto", "camperpicture", "picture", "headshot", "photourl", "photo url", "camper photo"];
+      const GROUP_ALIASES = ["group", "bunk", "cabin", "team"];
+      const ALLERGY_ALIASES = ["allergynotes", "allergydetails", "allergies", "allergy"];
+      const NOTES_ALIASES = ["campernotes", "notes", "camper notes"];
       const autoMap: Record<string, string> = {};
       for (const field of CAMPER_FIELDS) {
         const match = parsed.headers.find(h => {
           const norm = h.toLowerCase().replace(/[^a-z0-9]/g, "");
-          if (field.key === "photoUrl") return PHOTO_ALIASES.includes(norm) || PHOTO_ALIASES.includes(h.toLowerCase().trim());
+          const low = h.toLowerCase().trim();
+          if (field.key === "photoUrl") return PHOTO_ALIASES.includes(norm) || PHOTO_ALIASES.includes(low);
+          if (field.key === "bunk") return GROUP_ALIASES.includes(norm) || GROUP_ALIASES.includes(low);
+          if (field.key === "allergyNotes") return ALLERGY_ALIASES.includes(norm) || ALLERGY_ALIASES.includes(low);
+          if (field.key === "camperNotes") return NOTES_ALIASES.includes(norm) || NOTES_ALIASES.includes(low);
           return norm === field.key.toLowerCase().replace(/[^a-z0-9]/g, "")
-            || h.toLowerCase().replace(/[^a-z]/g, "").includes(field.label.toLowerCase().replace(/[^a-z]/g, ""));
+            || low.replace(/[^a-z]/g, "").includes(field.label.toLowerCase().replace(/[^a-z]/g, ""));
         });
         if (match) autoMap[field.key] = match;
       }
@@ -2619,17 +3073,18 @@ function CamperUpload() {
     csvData.rows.forEach((row, i) => {
       const rowNum = i + 2;
       const code = row[mapping.code]?.trim();
-      const firstName = row[mapping.name]?.trim();
+      const preferredName = row[mapping.preferredName]?.trim();
       const lastName  = mapping.lastName ? row[mapping.lastName]?.trim() : "";
       const bunk = row[mapping.bunk]?.trim();
-      if (!bunk) w.push(`Row ${rowNum}: missing bunk`);
+      if (!preferredName) w.push(`Row ${rowNum}: missing preferred name`);
+      if (!bunk) w.push(`Row ${rowNum}: missing group`);
       if (!code) w.push(`Row ${rowNum}: missing safety code`);
       if (code) {
         if (seenCodes.has(code)) w.push(`Row ${rowNum}: duplicate code "${code}" (also row ${seenCodes.get(code)})`);
         else seenCodes.set(code, rowNum);
       }
-      if (firstName) {
-        const fullName = `${firstName} ${lastName}`.trim();
+      if (preferredName) {
+        const fullName = `${preferredName} ${lastName}`.trim();
         if (seenNames.has(fullName)) w.push(`Row ${rowNum}: duplicate name "${fullName}" (also row ${seenNames.get(fullName)})`);
         else seenNames.set(fullName, rowNum);
       }
@@ -2650,48 +3105,52 @@ function CamperUpload() {
     for (let i = 0; i < csvData.rows.length; i++) {
       const row = csvData.rows[i];
       try {
-        const name = row[mapping.name]?.trim() ?? "";
+        const preferredName = row[mapping.preferredName]?.trim() ?? "";
         const bunk = row[mapping.bunk]?.trim() ?? "";
         const code = row[mapping.code]?.trim() ?? "";
-        if (!name || !bunk || !code) {
-          errors.push(`Row ${i + 2}: missing required field (name/bunk/code)`);
+        const arrivalMethod = row[mapping.arrivalMethod]?.trim() ?? "";
+        const dismissalMethod = row[mapping.dismissalMethod]?.trim() ?? "";
+        if (!preferredName || !bunk || !code) {
+          errors.push(`Row ${i + 2}: missing required field (preferredName/group/code)`);
           skipped++;
           continue;
         }
-        const camper: Record<string, unknown> = { name, bunk, code, status: "Waiting" as const };
+        const camper: Record<string, unknown> = {
+          name: preferredName,
+          preferredName,
+          bunk,
+          code,
+          status: "Waiting" as const,
+        };
 
-        for (const field of CAMPER_FIELDS) {
-          if (["name","bunk","code","lastName","preferredName","period1Group","period2Group","period3Group","period4Group","period5Group","period6Group","period7Group"].includes(field.key)) continue;
-          const csvCol = mapping[field.key];
-          if (!csvCol) continue;
-          const val = row[csvCol]?.trim();
-          if (!val) continue;
-          if (field.boolean) {
-            camper[field.key] = parseBool(val);
-          } else if (field.key === "busRoute") {
-            camper[field.key] = normalizeBusRoute(val);
-          } else if (field.key === "photoUrl") {
-            const url = normalizePhotoUrl(val);
-            if (url) camper[field.key] = url;
-          } else {
-            camper[field.key] = val;
-          }
+        if (arrivalMethod) camper.arrivalMethod = arrivalMethod;
+        if (dismissalMethod) camper.dismissalMethod = dismissalMethod;
+
+        // Optional fields
+        const lastName = mapping.lastName && row[mapping.lastName]?.trim();
+        if (lastName) camper.lastName = lastName;
+
+        const grade = mapping.grade && row[mapping.grade]?.trim();
+        if (grade) camper.grade = grade;
+
+        if (mapping.photoUrl) {
+          const url = normalizePhotoUrl(row[mapping.photoUrl] ?? "");
+          if (url) camper.photoUrl = url;
         }
 
-        // Name fields
-        if (mapping.lastName    && row[mapping.lastName]?.trim())     camper.lastName     = row[mapping.lastName].trim();
-        if (mapping.preferredName && row[mapping.preferredName]?.trim()) camper.preferredName = row[mapping.preferredName].trim();
-        // allergyDetails implies hasAllergies
-        if (camper.allergyDetails && !camper.hasAllergies) camper.hasAllergies = true;
-
-        // Period groups → periodGroups record
-        const periodGroups: Record<string, string> = {};
-        for (let p = 1; p <= 7; p++) {
-          const key = `period${p}Group`;
-          const col = mapping[key];
-          if (col && row[col]?.trim()) periodGroups[`Period${p}`] = row[col].trim();
+        // Allergy notes — text drives the flag
+        const allergyNotes = mapping.allergyNotes && row[mapping.allergyNotes]?.trim();
+        if (allergyNotes) {
+          camper.allergyDetails = allergyNotes;
+          camper.hasAllergies = true;
         }
-        if (Object.keys(periodGroups).length) camper.periodGroups = periodGroups;
+
+        // Camper notes — text drives the flag
+        const camperNotes = mapping.camperNotes && row[mapping.camperNotes]?.trim();
+        if (camperNotes) {
+          camper.camperNotes = camperNotes;
+          camper.hasNotes = true;
+        }
 
         await createCamper(camper as Parameters<typeof createCamper>[0]);
         added++;
@@ -2783,26 +3242,17 @@ function CamperUpload() {
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Required columns</p>
               <div className="flex flex-wrap gap-1.5">
-                {["firstName","lastName","bunk","code"].map(c => (
+                {["preferredName","group","code","arrivalMethod","dismissalMethod"].map(c => (
                   <span key={c} className="px-2 py-1 bg-red-50 text-red-700 rounded-lg text-xs font-mono font-semibold">{c}</span>
                 ))}
               </div>
             </div>
 
             <div>
-              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Strongly recommended</p>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Optional columns</p>
               <div className="flex flex-wrap gap-1.5">
-                {["preferredName","grade","unit","campSection","camp","campDivision","transportationType","busRoute","beforeCare","afterCare","hasAllergies","allergyDetails","hasNotes","defaultMorningArrival","defaultAfternoonDismissal","photoUrl"].map(c => (
+                {["lastName","grade","photoUrl","allergyNotes","camperNotes"].map(c => (
                   <span key={c} className="px-2 py-1 bg-blue-50 text-blue-700 rounded-lg text-xs font-mono">{c}</span>
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Optional (period groups)</p>
-              <div className="flex flex-wrap gap-1.5">
-                {["period1Group","period2Group","period3Group","period4Group","period5Group","period6Group","period7Group"].map(c => (
-                  <span key={c} className="px-2 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-mono">{c}</span>
                 ))}
               </div>
             </div>
@@ -2810,29 +3260,25 @@ function CamperUpload() {
             <div className="space-y-2">
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Accepted values</p>
               <div className="bg-slate-50 rounded-xl p-3 space-y-2 text-xs">
-                <p><span className="font-semibold">transportationType:</span> <span className="text-slate-500">Bus · AfterCare · Carline · WalkUp</span></p>
-                <p><span className="font-semibold">busRoute:</span> <span className="text-slate-500">"Bus 1"–"Bus 6" or just "1"–"6" (auto-normalized)</span></p>
-                <p><span className="font-semibold">beforeCare / afterCare / hasAllergies / hasNotes:</span> <span className="text-slate-500">TRUE / FALSE · Yes / No · 1 / 0</span></p>
-                <p><span className="font-semibold">code:</span> <span className="text-slate-500">3-digit pickup code — treat as text, preserve leading zeros</span></p>
+                <p><span className="font-semibold">arrivalMethod:</span> <span className="text-slate-500">Carline · Before Care · Bus 1 · Bus 2 · Bus 3 · Bus 4 · Bus 5 · Bus 6</span></p>
+                <p><span className="font-semibold">dismissalMethod:</span> <span className="text-slate-500">Carline · After Care · Bus 1 · Bus 2 · Bus 3 · Bus 4 · Bus 5 · Bus 6</span></p>
+                <p><span className="font-semibold">code:</span> <span className="text-slate-500">3-digit pickup code</span></p>
+                <p><span className="font-semibold">allergyNotes:</span> <span className="text-slate-500">Text description — allergy flag auto-shows if not blank</span></p>
+                <p><span className="font-semibold">camperNotes:</span> <span className="text-slate-500">Text — notes flag auto-shows if not blank</span></p>
               </div>
-            </div>
-
-            <div>
-              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Name behavior</p>
-              <p className="text-xs text-slate-500">Display name uses <span className="font-semibold">preferredName</span> + lastName when set. If preferredName is blank, uses firstName + lastName. Map firstName → "First Name" field.</p>
             </div>
 
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Sample header row</p>
               <div className="bg-slate-900 text-green-300 rounded-xl p-3 text-[10px] font-mono overflow-x-auto whitespace-nowrap">
-                firstName,lastName,preferredName,bunk,unit,grade,campSection,camp,campDivision,code,transportationType,busRoute,beforeCare,afterCare,hasAllergies,allergyDetails,hasNotes,defaultMorningArrival,defaultAfternoonDismissal,photoUrl,period1Group,period2Group,period3Group,period4Group,period5Group,period6Group,period7Group
+                preferredName,lastName,group,code,arrivalMethod,dismissalMethod,grade,photoUrl,allergyNotes,camperNotes
               </div>
             </div>
 
             <div>
               <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Sample data row</p>
               <div className="bg-slate-900 text-green-300 rounded-xl p-3 text-[10px] font-mono overflow-x-auto whitespace-nowrap">
-                Jacob,Cohen,Jake,L1,Lower,1,Lower,Kaleidoscope,Lower Division,123,Bus,Bus 2,No,Yes,Yes,Peanut allergy,Yes,Bus,AfterCare,,,,,,,,
+                Jake,Cohen,Group A,123,Carline,Bus 2,1st,,Peanut allergy,Needs help transitioning
               </div>
             </div>
 
@@ -2854,7 +3300,7 @@ function CamperUpload() {
             </div>
             <div>
               <p className="text-slate-700 font-medium">Choose a CSV file to upload</p>
-              <p className="text-xs text-slate-400 mt-1">Required: firstName, bunk, code</p>
+              <p className="text-xs text-slate-400 mt-1">Required: preferredName, group, code, arrivalMethod, dismissalMethod</p>
             </div>
             <label className="inline-block cursor-pointer">
               <span className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white rounded-xl active:opacity-80"
@@ -2912,23 +3358,23 @@ function CamperUpload() {
 
             {/* Preview rows */}
             {csvData.rows.slice(0, 5).map((row, i) => {
-              const first  = row[mapping.name]?.trim() || "—";
+              const pref   = row[mapping.preferredName]?.trim() || "—";
               const last   = mapping.lastName ? row[mapping.lastName]?.trim() : "";
-              const pref   = mapping.preferredName ? row[mapping.preferredName]?.trim() : "";
               const bunk   = row[mapping.bunk]?.trim() || "—";
               const code   = row[mapping.code]?.trim() || "—";
-              const transport = mapping.transportationType ? row[mapping.transportationType]?.trim() : "";
+              const arrival   = mapping.arrivalMethod ? row[mapping.arrivalMethod]?.trim() : "";
+              const dismissal = mapping.dismissalMethod ? row[mapping.dismissalMethod]?.trim() : "";
               return (
                 <div key={i} className="px-4 py-3">
                   <div className="flex items-baseline gap-2">
                     <span className="text-xs text-slate-400 w-5 flex-shrink-0">#{i + 2}</span>
-                    <span className="font-semibold text-slate-900 text-sm">{pref || first}{last ? ` ${last}` : ""}</span>
-                    {pref && first !== pref && <span className="text-xs text-slate-400">({first})</span>}
+                    <span className="font-semibold text-slate-900 text-sm">{pref}{last ? ` ${last}` : ""}</span>
                   </div>
                   <div className="flex gap-2 mt-1 ml-7 flex-wrap">
                     <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">{bunk}</span>
                     <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full font-mono">#{code}</span>
-                    {transport && <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">{transport}</span>}
+                    {arrival && <span className="text-xs bg-green-50 text-green-600 px-2 py-0.5 rounded-full">→ {arrival}</span>}
+                    {dismissal && <span className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">← {dismissal}</span>}
                   </div>
                 </div>
               );
