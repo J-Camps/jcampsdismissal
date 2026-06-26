@@ -25,8 +25,10 @@ export const getRunners = query({
     const all = await ctx.db.query("staff").collect();
     return all.filter(
       (s) =>
-        s.canBeRunner === true &&
-        s.isActive !== false
+        s.isActive !== false &&
+        (s.canBeRunner === true ||
+         s.primaryJob === "Dismissal Runner" ||
+         s.secondaryJob === "Dismissal Runner")
     );
   },
 });
@@ -45,6 +47,10 @@ export const create = mutation({
     unitAssignment: v.optional(v.string()),
     campSection: v.optional(v.string()),
     busRoute: v.optional(v.string()),
+    camp: v.optional(v.string()),
+    division: v.optional(v.string()),
+    primaryJob: v.optional(v.string()),
+    secondaryJob: v.optional(v.string()),
     canBeRunner: v.optional(v.boolean()),
     runnerLabel: v.optional(v.string()),
     isActive: v.optional(v.boolean()),
@@ -77,6 +83,10 @@ export const update = mutation({
     unitAssignment: v.optional(v.string()),
     campSection: v.optional(v.string()),
     busRoute: v.optional(v.string()),
+    camp: v.optional(v.string()),
+    division: v.optional(v.string()),
+    primaryJob: v.optional(v.string()),
+    secondaryJob: v.optional(v.string()),
     canBeRunner: v.optional(v.boolean()),
     runnerLabel: v.optional(v.string()),
     isActive: v.optional(v.boolean()),

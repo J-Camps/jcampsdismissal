@@ -191,7 +191,7 @@ function renderRoleView(role: Role, staff: StaffDoc): React.ReactNode {
   switch (role) {
     case "counselor":  return <CounselorView staff={staff} />;
     case "specialist": return <SpecialistView staff={staff} />;
-    case "runner":     return <RunnerView runnerName={staff.runnerLabel ?? staff.name} />;
+    case "runner":     return <RunnerViewForStaff staff={staff} />;
     case "carline":    return <Caller source="Carline" />;
     case "walkup":     return <Caller source="Walk-Up" />;
     case "dispatcher": return <Dispatcher />;
@@ -2411,62 +2411,116 @@ function Dispatcher() {
   const cancelCall = useMutation(api.campers.cancelCall);
   const [selected, setSelected] = useState<CamperDoc | null>(null);
 
-  const runnerNames = runners && runners.length > 0
-    ? runners.map(r => r.runnerLabel ?? r.name)
-    : RUNNERS_FALLBACK;
+  if (active === undefined || runners === undefined) return <Loading />;
 
-  if (active === undefined) return <Loading />;
+  const runnerDisplayNames = runners.length > 0
+    ? runners.map(r => ({ id: r._id, display: r.runnerLabel || staffDisplayName(r, runners), raw: r }))
+    : [];
+
+  const assignedRunnerNames = new Set(
+    active.filter(c => c.status === "Assigned" && c.runner).map(c => c.runner!)
+  );
+  const availableRunners = runnerDisplayNames.filter(r => !assignedRunnerNames.has(r.display));
+  const busyRunners = runnerDisplayNames.filter(r => assignedRunnerNames.has(r.display));
+
+  const sorted = [...active].sort((a, b) => (b.tCalled ?? 0) - (a.tCalled ?? 0));
+
+  const WAIT_WARN_MS = 5 * 60 * 1000;
+  const now = Date.now();
 
   return (
     <>
       <div>
-        <div className="flex items-center gap-2 mb-5">
+        <div className="flex items-center gap-2 mb-3">
           <Radio size={22} className="text-slate-700" />
           <h2 className="text-xl font-bold text-slate-900">Dispatcher</h2>
           <span className="ml-auto text-sm text-slate-500 font-medium">{active.length} active</span>
         </div>
+
+        {runnerDisplayNames.length > 0 && (
+          <div className="mb-4 bg-white rounded-2xl border border-slate-200 p-3">
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Runners</p>
+            <div className="flex gap-2 flex-wrap">
+              {runnerDisplayNames.map(r => {
+                const busy = assignedRunnerNames.has(r.display);
+                return (
+                  <span key={r.id} className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg ${busy ? "bg-slate-100 text-slate-400 line-through" : "bg-green-100 text-green-700"}`}>
+                    {r.display}{busy ? "" : " ✓"}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {active.length === 0 && (
           <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-400">No campers called yet.</div>
         )}
         <div className="space-y-3">
-          {active.map(c => (
-            <div key={c._id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <button onClick={() => setSelected(c)} className="w-full flex items-center gap-3 px-4 py-3.5 text-left active:bg-slate-50">
-                <div className="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 text-white font-bold text-lg overflow-hidden"
-                  style={{ backgroundColor: avatarBg(c.name) }}>
-                  {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-bold text-slate-900 text-base">{c.preferredName ?? c.name}</p>
-                  <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5 flex-wrap">
-                    <span className="flex items-center gap-1"><MapPin size={11} />{c.bunk}</span>
-                    <span>#{c.code}</span>
-                    <span className="flex items-center gap-1"><Clock size={11} />{fmt(c.tCalled)}</span>
+          {sorted.map(c => {
+            const waitingLong = !c.runner && c.tCalled && (now - c.tCalled) > WAIT_WARN_MS;
+            return (
+              <div key={c._id} className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${waitingLong ? "border-amber-400 ring-2 ring-amber-200" : "border-slate-200"}`}>
+                <button onClick={() => setSelected(c)} className="w-full flex items-center gap-3 px-4 py-3.5 text-left active:bg-slate-50">
+                  <div className="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 text-white font-bold text-lg overflow-hidden"
+                    style={{ backgroundColor: avatarBg(c.name) }}>
+                    {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
                   </div>
-                  {c.runner && <p className="text-xs text-blue-600 font-semibold mt-0.5">→ {c.runner}</p>}
-                </div>
-                <StatusBadge status={c.status} />
-              </button>
-              <div className="border-t border-slate-100 px-3 py-2.5 flex gap-2 flex-wrap items-center">
-                {runnerNames.map(r => (
-                  <button key={r} onClick={() => assign({ id: c._id, runner: r })}
-                    className={`px-3.5 py-2 rounded-xl text-sm font-bold transition-colors ${c.runner === r ? "text-white" : "bg-slate-100 text-slate-700 active:bg-slate-200"}`}
-                    style={c.runner === r ? { backgroundColor: "#023B64" } : undefined}>
-                    {r.replace("Runner ", "R")}
-                  </button>
-                ))}
-                <button onClick={() => cancelCall({ id: c._id })}
-                  className="ml-auto text-xs text-red-400 active:text-red-600 flex items-center gap-1 px-2 py-2">
-                  <AlertCircle size={13} /> Cancel
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-slate-900 text-base">{c.preferredName ?? c.name}</p>
+                    <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5 flex-wrap">
+                      <span className="flex items-center gap-1"><MapPin size={11} />{c.bunk}</span>
+                      <span>#{c.code}</span>
+                      <span className="flex items-center gap-1"><Clock size={11} />{fmt(c.tCalled)}</span>
+                    </div>
+                    {c.runner
+                      ? <p className="text-xs text-blue-600 font-semibold mt-0.5">→ {c.runner}</p>
+                      : <p className="text-xs text-amber-600 font-bold mt-0.5">Needs Runner</p>
+                    }
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <StatusBadge status={c.status} />
+                    {waitingLong && (
+                      <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+                        <AlertTriangle size={10} /> Waiting
+                      </span>
+                    )}
+                  </div>
                 </button>
+                <div className="border-t border-slate-100 px-3 py-2.5 flex gap-2 flex-wrap items-center">
+                  {availableRunners.map(r => (
+                    <button key={r.id} onClick={() => assign({ id: c._id, runner: r.display })}
+                      className="px-3.5 py-2 rounded-xl text-sm font-bold bg-green-50 text-green-700 active:bg-green-100 transition-colors">
+                      {r.display}
+                    </button>
+                  ))}
+                  {busyRunners.map(r => (
+                    <button key={r.id} onClick={() => assign({ id: c._id, runner: r.display })}
+                      className={`px-3.5 py-2 rounded-xl text-sm font-bold transition-colors ${c.runner === r.display ? "text-white" : "bg-slate-100 text-slate-400"}`}
+                      style={c.runner === r.display ? { backgroundColor: "#023B64" } : undefined}>
+                      {r.display}
+                    </button>
+                  ))}
+                  <button onClick={() => cancelCall({ id: c._id })}
+                    className="ml-auto text-xs text-red-400 active:text-red-600 flex items-center gap-1 px-2 py-2">
+                    <AlertCircle size={13} /> Cancel
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
       {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} />}
     </>
   );
+}
+
+function RunnerViewForStaff({ staff }: { staff: StaffDoc }) {
+  const runners = useQuery(api.staff.getRunners);
+  if (runners === undefined) return <Loading />;
+  const displayName = staff.runnerLabel || staffDisplayName(staff, runners);
+  return <RunnerView runnerName={displayName} />;
 }
 
 // ─── Runner View ─────────────────────────────────────────────────────────────
@@ -2597,7 +2651,7 @@ function RunnerView({ runnerName }: { runnerName: string }) {
 function RunnerAdminView() {
   const runners = useQuery(api.staff.getRunners);
   const runnerNames = runners && runners.length > 0
-    ? runners.map(r => r.runnerLabel ?? r.name)
+    ? runners.map(r => r.runnerLabel || staffDisplayName(r, runners))
     : RUNNERS_FALLBACK;
   const [me, setMe] = useState<string | null>(null);
   if (!me) return (
@@ -2921,20 +2975,53 @@ const PRIMARY_ROLE_OPTIONS: { value: Role; label: string }[] = [
 
 const UNIT_OPTIONS = ["Lower", "Middle", "Upper", "CIT", "Swim", "Sports", "Tennis", "Specialty"];
 
-const STAFF_CSV_HEADERS = ["firstName","lastName","email","phone","primaryRole","assignedBunk","assignedUnit","campSection","canBeRunner","busRoute","beforeCare","afterCare","isActive","loginCode","runnerLabel"];
+const STAFF_CSV_HEADERS = ["firstName","lastName","email","phone","primaryRole","assignedBunk","assignedUnit","campSection","canBeRunner","busRoute","camp","division","primaryJob","secondaryJob","beforeCare","afterCare","isActive","loginCode","runnerLabel"];
 
 type StaffFormData = {
   firstName: string; lastName: string; email: string; phone: string;
   code: string; role: Role; extraRoles: Role[];
   bunkAssignment: string; unitAssignment: string; campSection: string;
-  busRoute: string; canBeRunner: boolean; runnerLabel: string; isActive: boolean;
+  busRoute: string; camp: string; division: string;
+  primaryJob: string; secondaryJob: string;
+  canBeRunner: boolean; runnerLabel: string; isActive: boolean;
 };
 
 const STAFF_BLANK: StaffFormData = {
   firstName: "", lastName: "", email: "", phone: "", code: "",
   role: "counselor", extraRoles: [], bunkAssignment: "", unitAssignment: "",
-  campSection: "", busRoute: "", canBeRunner: false, runnerLabel: "", isActive: true,
+  campSection: "", busRoute: "", camp: "", division: "",
+  primaryJob: "", secondaryJob: "",
+  canBeRunner: false, runnerLabel: "", isActive: true,
 };
+
+const JOB_OPTIONS = [
+  "Bunk Counselor", "Specialist", "Unit Head", "Dismissal Runner",
+  "Dismissal Caller", "Dispatcher", "Bus Staff", "Before Care Staff",
+  "After Care Staff", "Lunch Staff", "Office", "Director",
+];
+
+function staffDisplayName(s: { firstName?: string; lastName?: string; name: string }, allRunners: { firstName?: string; lastName?: string; name: string }[]): string {
+  const first = s.firstName ?? s.name.split(" ")[0] ?? "";
+  const last = s.lastName ?? s.name.split(" ").slice(1).join(" ") ?? "";
+  if (!last) return first;
+  const lastInitial = last.charAt(0);
+  const base = `${first} ${lastInitial}.`;
+  const conflicts = allRunners.filter(r => {
+    const rFirst = r.firstName ?? r.name.split(" ")[0] ?? "";
+    const rLast = r.lastName ?? r.name.split(" ").slice(1).join(" ") ?? "";
+    return rFirst === first && rLast !== last && rLast.charAt(0) === lastInitial;
+  });
+  if (conflicts.length === 0) return base;
+  for (let i = 2; i <= last.length; i++) {
+    const partial = `${first} ${last.slice(0, i)}.`;
+    const stillConflicting = conflicts.filter(r => {
+      const rLast = r.lastName ?? r.name.split(" ").slice(1).join(" ") ?? "";
+      return rLast.slice(0, i) === last.slice(0, i);
+    });
+    if (stillConflicting.length === 0) return partial;
+  }
+  return `${first} ${last}`;
+}
 
 function staffFormFromDoc(s: StaffDoc): StaffFormData {
   const parts = s.name.split(" ");
@@ -2950,6 +3037,10 @@ function staffFormFromDoc(s: StaffDoc): StaffFormData {
     unitAssignment: s.unitAssignment ?? "",
     campSection: s.campSection ?? "",
     busRoute: s.busRoute ?? "",
+    camp: (s as Record<string, unknown>).camp as string ?? "",
+    division: (s as Record<string, unknown>).division as string ?? "",
+    primaryJob: (s as Record<string, unknown>).primaryJob as string ?? "",
+    secondaryJob: (s as Record<string, unknown>).secondaryJob as string ?? "",
     canBeRunner: s.canBeRunner ?? false,
     runnerLabel: s.runnerLabel ?? "",
     isActive: s.isActive !== false,
@@ -2972,6 +3063,7 @@ function StaffManagement() {
   const [csvTab, setCsvTab] = useState(false);
   const [csvPreview, setCsvPreview] = useState<{ rows: StaffFormData[]; errors: StaffCsvError[] } | null>(null);
   const [csvUploading, setCsvUploading] = useState(false);
+  const [groupBy, setGroupBy] = useState<"none" | "camp" | "division" | "bunk" | "primaryJob" | "secondaryJob">("none");
 
   const bunks = bunkList ?? [];
 
@@ -2996,7 +3088,11 @@ function StaffManagement() {
       unitAssignment: form.unitAssignment || undefined,
       campSection: form.campSection || undefined,
       busRoute: form.busRoute || undefined,
-      canBeRunner: form.canBeRunner || undefined,
+      camp: form.camp || undefined,
+      division: form.division || undefined,
+      primaryJob: form.primaryJob || undefined,
+      secondaryJob: form.secondaryJob || undefined,
+      canBeRunner: form.canBeRunner || form.primaryJob === "Dismissal Runner" || form.secondaryJob === "Dismissal Runner" || undefined,
       runnerLabel: form.runnerLabel.trim() || undefined,
       isActive: form.isActive,
     };
@@ -3072,6 +3168,10 @@ function StaffManagement() {
           unitAssignment: unit,
           campSection: row["campSection"]?.trim() ?? "",
           busRoute: br,
+          camp: row["camp"]?.trim() ?? "",
+          division: row["division"]?.trim() ?? "",
+          primaryJob: row["primaryJob"]?.trim() ?? "",
+          secondaryJob: row["secondaryJob"]?.trim() ?? "",
           canBeRunner: parseBool(row["canBeRunner"] ?? ""),
           runnerLabel: row["runnerLabel"]?.trim() ?? "",
           isActive: row["isActive"] ? parseBool(row["isActive"]) : true,
@@ -3098,7 +3198,11 @@ function StaffManagement() {
           unitAssignment: row.unitAssignment || undefined,
           campSection: row.campSection || undefined,
           busRoute: row.busRoute || undefined,
-          canBeRunner: row.canBeRunner || undefined,
+          camp: row.camp || undefined,
+          division: row.division || undefined,
+          primaryJob: row.primaryJob || undefined,
+          secondaryJob: row.secondaryJob || undefined,
+          canBeRunner: row.canBeRunner || row.primaryJob === "Dismissal Runner" || row.secondaryJob === "Dismissal Runner" || undefined,
           runnerLabel: row.runnerLabel || undefined,
           isActive: row.isActive,
         };
@@ -3119,11 +3223,13 @@ function StaffManagement() {
     if (!staffList) return;
     const rows = staffList.map(s => {
       const roleLabel = PRIMARY_ROLE_OPTIONS.find(r => r.value === s.role)?.label ?? s.role;
+      const sx = s as unknown as { camp?: string; division?: string; primaryJob?: string; secondaryJob?: string };
       return [
         s.firstName ?? s.name.split(" ")[0] ?? "", s.lastName ?? s.name.split(" ").slice(1).join(" ") ?? "",
         s.email ?? "", s.phone ?? "", roleLabel,
         s.bunkAssignment ?? "", s.unitAssignment ?? "", s.campSection ?? "",
         s.canBeRunner ? "TRUE" : "FALSE", s.busRoute ?? "",
+        sx.camp ?? "", sx.division ?? "", sx.primaryJob ?? "", sx.secondaryJob ?? "",
         "", "", s.isActive !== false ? "TRUE" : "FALSE", s.code, s.runnerLabel ?? "",
       ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(",");
     });
@@ -3147,9 +3253,14 @@ function StaffManagement() {
   const filtered = staffList.filter(s => {
     if (!q) return true;
     const low = q.toLowerCase();
+    const sx = s as Record<string, unknown>;
     return s.name.toLowerCase().includes(low) || s.code.includes(low)
       || s.role.toLowerCase().includes(low) || (s.bunkAssignment ?? "").toLowerCase().includes(low)
-      || (s.email ?? "").toLowerCase().includes(low);
+      || (s.email ?? "").toLowerCase().includes(low)
+      || ((sx.camp as string) ?? "").toLowerCase().includes(low)
+      || ((sx.division as string) ?? "").toLowerCase().includes(low)
+      || ((sx.primaryJob as string) ?? "").toLowerCase().includes(low)
+      || ((sx.secondaryJob as string) ?? "").toLowerCase().includes(low);
   });
 
   const showForm = adding || editing;
@@ -3242,14 +3353,45 @@ function StaffManagement() {
         <div className="relative">
           <Search size={17} className="absolute left-3.5 top-3.5 text-slate-400" />
           <input value={q} onChange={e => setQ(e.target.value)}
-            placeholder="Search name, code, role, bunk, email…"
+            placeholder="Search name, code, role, bunk, camp, job…"
             className="w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl focus:outline-none text-sm bg-white"
             onFocus={e => (e.currentTarget.style.borderColor = "#023B64")}
             onBlur={e => (e.currentTarget.style.borderColor = "")} />
         </div>
 
-        <div className="space-y-2">
-          {filtered.map(s => (
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-slate-400">Group by</span>
+          {([["none","None"],["camp","Camp"],["division","Division"],["bunk","Bunk"],["primaryJob","Primary Job"],["secondaryJob","Secondary Job"]] as const).map(([val, label]) => (
+            <button key={val} onClick={() => setGroupBy(val)}
+              className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors ${groupBy === val ? "text-white" : "bg-white text-slate-500 border border-slate-200"}`}
+              style={groupBy === val ? { backgroundColor: "#023B64" } : undefined}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {(() => {
+          const getGroupKey = (s: StaffDoc): string => {
+            const sx = s as unknown as { camp?: string; division?: string; primaryJob?: string; secondaryJob?: string };
+            switch (groupBy) {
+              case "camp": return sx.camp || "No Camp";
+              case "division": return sx.division || "No Division";
+              case "bunk": return s.bunkAssignment || "No Bunk";
+              case "primaryJob": return sx.primaryJob || "No Primary Job";
+              case "secondaryJob": return sx.secondaryJob || "No Secondary Job";
+              default: return "";
+            }
+          };
+
+          const groups: Map<string, StaffDoc[]> = new Map();
+          for (const s of filtered) {
+            const key = groupBy === "none" ? "" : getGroupKey(s);
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key)!.push(s);
+          }
+          const sortedGroups = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+
+          const renderStaffRow = (s: StaffDoc) => (
             <div key={s._id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <button onClick={() => openEdit(s)} className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-slate-50">
                 <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white flex-shrink-0"
@@ -3273,6 +3415,8 @@ function StaffManagement() {
                       </span>
                     ))}
                     {s.bunkAssignment && <span className="text-xs text-slate-500">{s.bunkAssignment}</span>}
+                    {(s as unknown as { camp?: string }).camp ? <span className="text-xs text-slate-500">{(s as unknown as { camp: string }).camp}</span> : null}
+                    {(s as unknown as { primaryJob?: string }).primaryJob ? <span className="text-[10px] font-semibold text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded-full">{(s as unknown as { primaryJob: string }).primaryJob}</span> : null}
                     {s.busRoute && <span className="text-xs text-slate-500">{s.busRoute}</span>}
                     {s.canBeRunner && <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Runner</span>}
                   </div>
@@ -3280,11 +3424,29 @@ function StaffManagement() {
                 <ChevronRight size={16} className="text-slate-300 flex-shrink-0" />
               </button>
             </div>
-          ))}
-          {filtered.length === 0 && (
-            <div className="text-center text-slate-400 py-8">No staff found</div>
-          )}
-        </div>
+          );
+
+          return (
+            <div className="space-y-4">
+              {sortedGroups.map(([group, members]) => (
+                <div key={group}>
+                  {group && (
+                    <div className="flex items-center gap-2 mb-2 px-1">
+                      <span className="text-sm font-bold text-slate-700">{group}</span>
+                      <span className="text-xs text-slate-400">{members.length}</span>
+                    </div>
+                  )}
+                  <div className="space-y-2">
+                    {members.map(renderStaffRow)}
+                  </div>
+                </div>
+              ))}
+              {filtered.length === 0 && (
+                <div className="text-center text-slate-400 py-8">No staff found</div>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Add / Edit modal */}
@@ -3362,6 +3524,38 @@ function StaffManagement() {
                       {r.label}
                     </button>
                   ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Camp</label>
+                  <input value={form.camp} onChange={e => setForm({ ...form, camp: e.target.value })}
+                    className={inp} placeholder="e.g. Kaleidoscope" />
+                </div>
+                <div>
+                  <label className={lbl}>Division</label>
+                  <input value={form.division} onChange={e => setForm({ ...form, division: e.target.value })}
+                    className={inp} placeholder="e.g. Upper" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Primary Job</label>
+                  <select value={form.primaryJob} onChange={e => setForm({ ...form, primaryJob: e.target.value })}
+                    className={`${inp} bg-white`}>
+                    <option value="">Select job…</option>
+                    {JOB_OPTIONS.map(j => <option key={j} value={j}>{j}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className={lbl}>Secondary Job</label>
+                  <select value={form.secondaryJob} onChange={e => setForm({ ...form, secondaryJob: e.target.value })}
+                    className={`${inp} bg-white`}>
+                    <option value="">None</option>
+                    {JOB_OPTIONS.filter(j => j !== form.primaryJob).map(j => <option key={j} value={j}>{j}</option>)}
+                  </select>
                 </div>
               </div>
 
