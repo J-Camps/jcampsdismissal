@@ -104,6 +104,12 @@ export const PERIOD = v.union(
   v.literal("Period7"),
 );
 
+// ── Day type ──────────────────────────────────────────────────────────────────
+// Upper Camp runs two distinct schedules: Monday–Thursday ("MonThu") and a
+// separate Friday schedule ("Friday") with a different set of periods/classes.
+// Records with no dayType are treated as "MonThu" for backward compatibility.
+export const DAY_TYPE = v.union(v.literal("MonThu"), v.literal("Friday"));
+
 export const PERIOD_ASSIGNMENT = v.object({
   period: PERIOD,
   group: v.string(),
@@ -196,6 +202,10 @@ export default defineSchema({
     // ── Bus-specific fields ─────────────────────────────────────────────
     busStop: v.optional(v.string()),
     walkPermission: v.optional(v.boolean()),
+
+    // ── After Care program ──────────────────────────────────────────────
+    afterCareProgram: v.optional(v.string()),
+    isExternal: v.optional(v.boolean()),
 
     // ── Camper notes (text drives the flag) ─────────────────────────────
     camperNotes: v.optional(v.string()),
@@ -387,6 +397,7 @@ export default defineSchema({
   // ── Period classes (definitions) ──────────────────────────────────────────
   periodClasses: defineTable({
     session: v.optional(v.string()),
+    dayType: v.optional(DAY_TYPE),   // "MonThu" (default) | "Friday"
     period: v.string(),
     className: v.string(),
     normalizedClassName: v.optional(v.string()),
@@ -401,12 +412,14 @@ export default defineSchema({
     updatedAt: v.optional(v.number()),
   })
     .index("by_period", ["period"])
-    .index("by_period_class", ["period", "className"]),
+    .index("by_period_class", ["period", "className"])
+    .index("by_dayType_period", ["dayType", "period"]),
 
   // ── Period schedule records (camper → class with effective dates) ────────
   periodScheduleRecords: defineTable({
     camperId: v.id("campers"),
     session: v.optional(v.string()),
+    dayType: v.optional(DAY_TYPE),   // "MonThu" (default) | "Friday"
     period: v.string(),
     periodClassId: v.id("periodClasses"),
     classNameSnapshot: v.string(),
@@ -454,6 +467,7 @@ export default defineSchema({
     camperId: v.id("campers"),
     date: v.string(),
     session: v.optional(v.string()),
+    dayType: v.optional(DAY_TYPE),   // resolved from `date` on write
     period: v.string(),
     periodClassId: v.optional(v.id("periodClasses")),
     classNameSnapshot: v.optional(v.string()),

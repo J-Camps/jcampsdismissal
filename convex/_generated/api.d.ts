@@ -17,6 +17,8 @@ import type * as exceptions from "../exceptions.js";
 import type * as lunchRecords from "../lunchRecords.js";
 import type * as periodAttendance from "../periodAttendance.js";
 import type * as periodClasses from "../periodClasses.js";
+import type * as periodDays from "../periodDays.js";
+import type * as periodMigrations from "../periodMigrations.js";
 import type * as periodScheduleRecords from "../periodScheduleRecords.js";
 import type * as periodSchedules from "../periodSchedules.js";
 import type * as staff from "../staff.js";
@@ -39,6 +41,8 @@ declare const fullApi: ApiFromModules<{
   lunchRecords: typeof lunchRecords;
   periodAttendance: typeof periodAttendance;
   periodClasses: typeof periodClasses;
+  periodDays: typeof periodDays;
+  periodMigrations: typeof periodMigrations;
   periodScheduleRecords: typeof periodScheduleRecords;
   periodSchedules: typeof periodSchedules;
   staff: typeof staff;

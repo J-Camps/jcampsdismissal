@@ -69,6 +69,9 @@ const PERIOD_LABEL: Record<string, string> = {
 
 const today = () => new Date().toISOString().split("T")[0];
 
+// Which Upper Camp schedule today follows: Friday → "Friday", else "MonThu".
+const currentDayType = (): "MonThu" | "Friday" => (new Date().getDay() === 5 ? "Friday" : "MonThu");
+
 type StaffDoc  = Doc<"staff">;
 type CamperDoc = Doc<"campers">;
 
@@ -633,12 +636,13 @@ function CamperDashboard({ staff }: { staff: StaffDoc }) {
 
   if (campers === undefined) return <Loading />;
 
-  const rows = campers.map(c => getCamperRow(c));
+  const internalCampers = campers.filter(c => !c.isExternal);
+  const rows = internalCampers.map(c => getCamperRow(c));
 
   const hereCount       = rows.filter(r => r.campusStatus === "Here").length;
   const notHereCount    = rows.filter(r => r.campusStatus === "NotHere").length;
-  const absentCount     = campers.filter(c => c.arrivalStatus === "Absent").length;
-  const notArrivedCount = campers.filter(c => !c.arrivalStatus || c.arrivalStatus === "NotArrived").length;
+  const absentCount     = internalCampers.filter(c => c.arrivalStatus === "Absent").length;
+  const notArrivedCount = internalCampers.filter(c => !c.arrivalStatus || c.arrivalStatus === "NotArrived").length;
   const dismissedCount  = rows.filter(r => r.dismissal === "Dismissed" || r.dismissal === "Left for Day").length;
 
   const q = search.toLowerCase().trim();
@@ -760,7 +764,7 @@ function CamperDashboard({ staff }: { staff: StaffDoc }) {
           })}
         </div>
         <p className="text-xs text-slate-400 text-center mt-2 pt-2 border-t border-slate-100">
-          {campers.length} enrolled
+          {internalCampers.length} enrolled
           {notArrivedCount > 0  ? ` · ${notArrivedCount} not arrived` : ""}
           {absentCount > 0      ? ` · ${absentCount} absent` : ""}
           {dismissedCount > 0   ? ` · ${dismissedCount} dismissed` : ""}
@@ -2072,6 +2076,23 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   const normalRoster = useQuery(kind === "BeforeCare" ? api.campers.getBeforeCareRoster : api.campers.getAfterCareRoster, {});
   const allCampers   = useQuery(api.campers.list);
   const overrides    = useQuery(api.dailyOverrides.getForDate, {});
+  const [careGroupBy, setCareGroupBy] = useState<"all" | "program">("all");
+  const [addingExternal, setAddingExternal] = useState(false);
+  const [extForm, setExtForm] = useState({ firstName: "", lastName: "", program: "Grossman After Care", allergy: "" });
+  const [extError, setExtError] = useState("");
+  const [extUploadMode, setExtUploadMode] = useState(false);
+  const [extCsvData, setExtCsvData] = useState<{ headers: string[]; rows: CsvRow[] } | null>(null);
+  const [extMapping, setExtMapping] = useState<Record<string, string>>({});
+  const [extUploadStep, setExtUploadStep] = useState<"map" | "preview" | null>(null);
+  const [extUploading, setExtUploading] = useState(false);
+
+  const EXT_AC_FIELDS = [
+    { key: "firstName", label: "First Name", required: true },
+    { key: "lastName", label: "Last Name", required: true },
+    { key: "program", label: "Program", required: false },
+    { key: "allergyNotes", label: "Allergy Notes", required: false },
+  ] as const;
+  const createCamper = useMutation(api.campers.adminCreate);
   if (normalRoster === undefined || allCampers === undefined) return <Loading />;
 
   const title = kind === "BeforeCare" ? "Before Care" : "After Care";
@@ -2112,7 +2133,14 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
 
   return (
     <div className="space-y-4">
-      <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{title}</h2>
+      <div className="flex items-center gap-2">
+        <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{title}</h2>
+        {kind === "AfterCare" && (
+          <button onClick={() => setAddingExternal(true)}
+            className="ml-auto text-xs font-semibold text-white px-3 py-1.5 rounded-xl"
+            style={{ backgroundColor: "#023B64" }}>+ External</button>
+        )}
+      </div>
 
       {/* Summary strip — same as bunk attendance, on top */}
       <div className="flex gap-2">
@@ -2152,17 +2180,233 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
         </div>
       )}
 
-      <InOutRosterView
-        campers={todayRoster}
-        checkpoint={kind}
-        staffName={staff.name}
-        inLabel="Mark In"
-        outLabel={outLabel}
-        groupLabel={title}
-        emptyMessage={`No campers expected in ${title} today.`}
-        overrides={overrides ?? []}
-        hideSummary
-      />
+      {kind === "AfterCare" && (
+        <div className="flex gap-1.5">
+          <button onClick={() => setCareGroupBy("all")}
+            className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors ${careGroupBy === "all" ? "text-white" : "bg-white text-slate-500 border border-slate-200"}`}
+            style={careGroupBy === "all" ? { backgroundColor: "#023B64" } : undefined}>All</button>
+          <button onClick={() => setCareGroupBy("program")}
+            className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors ${careGroupBy === "program" ? "text-white" : "bg-white text-slate-500 border border-slate-200"}`}
+            style={careGroupBy === "program" ? { backgroundColor: "#023B64" } : undefined}>By Program</button>
+        </div>
+      )}
+
+      {kind === "AfterCare" && careGroupBy === "program" ? (() => {
+        const groups = new Map<string, CamperDoc[]>();
+        for (const c of todayRoster) {
+          const prog = c.afterCareProgram || "JCamps After Care";
+          if (!groups.has(prog)) groups.set(prog, []);
+          groups.get(prog)!.push(c);
+        }
+        return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([prog, members]) => (
+          <div key={prog} className="space-y-2">
+            <div className="flex items-center gap-2 px-1">
+              <span className="text-sm font-bold text-slate-700">{prog}</span>
+              <span className="text-xs text-slate-400">{members.length}</span>
+            </div>
+            <InOutRosterView
+              campers={members}
+              checkpoint={kind}
+              staffName={staff.name}
+              inLabel="Mark In"
+              outLabel={outLabel}
+              groupLabel={`${title} · ${prog}`}
+              emptyMessage={`No campers in ${prog}.`}
+              overrides={overrides ?? []}
+              hideSummary
+            />
+          </div>
+        ));
+      })() : (
+        <InOutRosterView
+          campers={todayRoster}
+          checkpoint={kind}
+          staffName={staff.name}
+          inLabel="Mark In"
+          outLabel={outLabel}
+          groupLabel={title}
+          emptyMessage={`No campers expected in ${title} today.`}
+          overrides={overrides ?? []}
+          hideSummary
+        />
+      )}
+
+      {addingExternal && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setAddingExternal(false)} />
+          <div className="relative bg-white rounded-t-3xl overflow-auto max-h-[85vh]">
+            <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 bg-slate-200 rounded-full" /></div>
+            <div className="px-5 pt-2 pb-6 space-y-4">
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-bold text-slate-900">Add External After Care</h3>
+                <button onClick={() => setExtUploadMode(!extUploadMode)}
+                  className="ml-auto text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600">
+                  {extUploadMode ? "Single" : "CSV Upload"}
+                </button>
+              </div>
+              <p className="text-xs text-slate-400">These campers only appear in After Care.</p>
+              {extError && <p className="text-sm text-red-500 font-medium">{extError}</p>}
+
+              {extUploadMode ? (
+                <div className="space-y-3">
+                  {!extCsvData ? (
+                    <>
+                      <p className="text-xs text-slate-500">CSV: First Name, Last Name, Program, Allergy Notes</p>
+                      <label className="inline-block text-xs font-semibold text-white px-3 py-2 rounded-xl cursor-pointer"
+                        style={{ backgroundColor: "#023B64" }}>
+                        Choose CSV
+                        <input type="file" accept=".csv" onChange={e => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = (ev) => {
+                            const parsed = parseCsv(ev.target?.result as string);
+                            setExtCsvData(parsed);
+                            const autoMap: Record<string, string> = {};
+                            for (const field of EXT_AC_FIELDS) {
+                              const match = parsed.headers.find(h => {
+                                const norm = h.toLowerCase().replace(/[^a-z0-9]/g, "");
+                                return norm === field.key.toLowerCase() || norm === field.label.toLowerCase().replace(/[^a-z0-9]/g, "");
+                              });
+                              if (match) autoMap[field.key] = match;
+                            }
+                            setExtMapping(autoMap);
+                            setExtUploadStep("map");
+                          };
+                          reader.readAsText(file);
+                          e.target.value = "";
+                        }} className="hidden" />
+                      </label>
+                    </>
+                  ) : extUploadStep === "map" ? (
+                    <div className="space-y-2">
+                      <p className="text-sm font-semibold text-slate-700">{extCsvData.rows.length} rows · {extCsvData.headers.length} columns</p>
+                      {EXT_AC_FIELDS.map(field => (
+                        <div key={field.key} className="flex items-center gap-3">
+                          <span className="text-sm text-slate-900 flex-1">{field.label}{field.required ? " *" : ""}</span>
+                          <select value={extMapping[field.key] ?? ""} onChange={e => setExtMapping({ ...extMapping, [field.key]: e.target.value })}
+                            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white w-36">
+                            <option value="">— skip —</option>
+                            {extCsvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                          </select>
+                        </div>
+                      ))}
+                      <div className="flex gap-3">
+                        <button onClick={() => { setExtCsvData(null); setExtUploadStep(null); }} className="flex-1 py-2 text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl">Back</button>
+                        <button onClick={() => setExtUploadStep("preview")} disabled={!extMapping.firstName || !extMapping.lastName}
+                          className="flex-1 py-2 text-sm font-bold text-white rounded-xl disabled:opacity-50" style={{ backgroundColor: "#023B64" }}>Preview</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="text-sm font-semibold text-slate-700">Preview · {extCsvData.rows.length} campers</p>
+                      {extCsvData.rows.slice(0, 5).map((row, i) => {
+                        const fn = extMapping.firstName ? (row[extMapping.firstName]?.trim() ?? "") : "";
+                        const ln = extMapping.lastName ? (row[extMapping.lastName]?.trim() ?? "") : "";
+                        const prog = extMapping.program ? (row[extMapping.program]?.trim() ?? "") : "";
+                        const allergy = extMapping.allergyNotes ? (row[extMapping.allergyNotes]?.trim() ?? "") : "";
+                        return (
+                          <div key={i} className="text-sm">
+                            <span className="font-semibold text-slate-900">{fn} {ln}</span>
+                            {prog && <span className="text-xs text-slate-400 ml-2">{prog}</span>}
+                            {allergy && <span className="text-[10px] text-red-600 ml-2">Allergy: {allergy}</span>}
+                          </div>
+                        );
+                      })}
+                      {extCsvData.rows.length > 5 && <p className="text-xs text-slate-400">…and {extCsvData.rows.length - 5} more</p>}
+                      <div className="flex gap-3">
+                        <button onClick={() => setExtUploadStep("map")} className="flex-1 py-2 text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl">Back</button>
+                        <button disabled={extUploading} onClick={async () => {
+                          setExtUploading(true);
+                          const errors: string[] = [];
+                          let created = 0;
+                          for (let i = 0; i < extCsvData.rows.length; i++) {
+                            const row = extCsvData.rows[i];
+                            const fn = extMapping.firstName ? (row[extMapping.firstName]?.trim() ?? "") : "";
+                            const ln = extMapping.lastName ? (row[extMapping.lastName]?.trim() ?? "") : "";
+                            if (!fn) { errors.push(`Row ${i + 2}: missing first name`); continue; }
+                            const prog = extMapping.program ? (row[extMapping.program]?.trim() || "Grossman After Care") : "Grossman After Care";
+                            const allergy = extMapping.allergyNotes ? (row[extMapping.allergyNotes]?.trim() || undefined) : undefined;
+                            try {
+                              await createCamper({
+                                preferredName: fn, lastName: ln || undefined,
+                                bunk: "External", code: "000",
+                                dismissalMethod: "After Care",
+                                afterCareProgram: prog, isExternal: true,
+                                allergyDetails: allergy,
+                                staffName: staff.name,
+                              });
+                              created++;
+                            } catch (e: unknown) { errors.push(`Row ${i + 2}: ${e instanceof Error ? e.message : "failed"}`); }
+                          }
+                          setExtUploading(false);
+                          if (errors.length > 0) setExtError(`${created} added. Errors: ${errors.join("; ")}`);
+                          else { setAddingExternal(false); setExtCsvData(null); setExtUploadStep(null); setExtError(""); }
+                        }}
+                          className="flex-1 py-2 text-sm font-bold text-white rounded-xl disabled:opacity-50" style={{ backgroundColor: "#023B64" }}>
+                          {extUploading ? "Uploading…" : `Upload ${extCsvData.rows.length}`}
+                        </button>
+                      </div>
+                      {extError && <p className="text-xs text-amber-700">{extError}</p>}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-500 mb-1 block">First Name *</label>
+                      <input value={extForm.firstName} onChange={e => setExtForm({ ...extForm, firstName: e.target.value })}
+                        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" placeholder="First name" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-500 mb-1 block">Last Name *</label>
+                      <input value={extForm.lastName} onChange={e => setExtForm({ ...extForm, lastName: e.target.value })}
+                        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" placeholder="Last name" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-semibold text-slate-500 mb-1 block">Program</label>
+                      <select value={extForm.program} onChange={e => setExtForm({ ...extForm, program: e.target.value })}
+                        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white">
+                        <option value="Grossman After Care">Grossman After Care</option>
+                        <option value="JCamps After Care">JCamps After Care</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs font-semibold text-slate-500 mb-1 block">Allergy Notes</label>
+                      <input value={extForm.allergy} onChange={e => setExtForm({ ...extForm, allergy: e.target.value })}
+                        className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" placeholder="e.g. Peanut allergy" />
+                    </div>
+                  </div>
+                  <button onClick={async () => {
+                    if (!extForm.firstName.trim() || !extForm.lastName.trim()) { setExtError("Name is required"); return; }
+                    try {
+                      await createCamper({
+                        preferredName: extForm.firstName.trim(),
+                        lastName: extForm.lastName.trim(),
+                        bunk: "External",
+                        code: "000",
+                        dismissalMethod: "After Care",
+                        afterCareProgram: extForm.program,
+                        isExternal: true,
+                        allergyDetails: extForm.allergy.trim() || undefined,
+                        staffName: staff.name,
+                      });
+                      setAddingExternal(false);
+                      setExtForm({ firstName: "", lastName: "", program: "Grossman After Care", allergy: "" });
+                      setExtError("");
+                    } catch (e: unknown) { setExtError(e instanceof Error ? e.message : "Failed"); }
+                  }}
+                    className="w-full py-3 text-sm font-bold text-white rounded-xl"
+                    style={{ backgroundColor: "#023B64" }}>Add Camper</button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2393,32 +2637,122 @@ function BusView({ staff }: { staff: StaffDoc }) {
 // ─── Specialist View (Upper Camp activity rosters) ───────────────────────────
 
 function SpecialistView({ staff }: { staff: StaffDoc }) {
-  const assignments = staff.periodAssignments ?? [];
-  const [active, setActive] = useState(0);
+  const [dayType, setDayType] = useState<"MonThu" | "Friday">(currentDayType());
+  const classes = useQuery(api.periodClasses.getForStaff, { staffId: staff._id, dayType });
+  const [activeId, setActiveId] = useState<string | null>(null);
 
-  if (assignments.length === 0) {
-    return (
-      <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
-        No periods assigned. Contact an administrator.
-      </div>
-    );
-  }
+  if (classes === undefined) return <Loading />;
+
+  const sorted = [...classes].sort((a, b) => a.period.localeCompare(b.period) || a.className.localeCompare(b.className));
+  const active = sorted.find(c => c._id === activeId) ?? sorted[0] ?? null;
 
   return (
     <div className="space-y-4">
-      {assignments.length > 1 && (
+      <div className="flex items-center gap-2">
+        <Calendar size={22} className="text-slate-700" />
+        <h2 className="text-xl font-bold text-slate-900">My Classes</h2>
+      </div>
+
+      {/* Mon–Thu vs Friday — defaults to today's schedule. */}
+      <div className="flex gap-1.5 bg-slate-100 rounded-2xl p-1.5">
+        {([{ id: "MonThu", label: "Mon–Thu" }, { id: "Friday", label: "Friday" }] as const).map(d => (
+          <button key={d.id} onClick={() => { setDayType(d.id); setActiveId(null); }}
+            className="flex-1 py-2 rounded-xl text-sm font-bold transition-colors"
+            style={dayType === d.id ? { backgroundColor: "#F59E0B", color: "#fff" } : { color: "#64748b" }}>
+            {d.label}{currentDayType() === d.id ? " · Today" : ""}
+          </button>
+        ))}
+      </div>
+
+      {sorted.length === 0 && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
+          No classes assigned for {dayType === "Friday" ? "Friday" : "Mon–Thu"}. Contact an administrator.
+        </div>
+      )}
+
+      {sorted.length > 1 && (
         <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5 overflow-x-auto">
-          {assignments.map((a, i) => (
-            <button key={i} onClick={() => setActive(i)}
-              className="flex-1 py-2 px-2 rounded-xl text-sm font-semibold transition-colors whitespace-nowrap"
-              style={active === i ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
-              {PERIOD_LABEL[a.period] ?? a.period}
+          {sorted.map(c => (
+            <button key={c._id} onClick={() => setActiveId(c._id)}
+              className="flex-shrink-0 py-2 px-3 rounded-xl text-sm font-semibold transition-colors whitespace-nowrap"
+              style={active?._id === c._id ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
+              {(PERIOD_LABEL[c.period] ?? c.period).replace("Period ", "P")} · {c.className}
             </button>
           ))}
         </div>
       )}
-      <PeriodRosterView assignment={assignments[active]} staffName={staff.name} />
+
+      {active && <MyClassRoster cls={active} staffName={staff.name} />}
     </div>
+  );
+}
+
+// A staff member's records-based class roster with daily check-in.
+function MyClassRoster({ cls, staffName }: { cls: Doc<"periodClasses">; staffName: string }) {
+  const roster = useQuery(api.periodScheduleRecords.getForClass, { periodClassId: cls._id });
+  const attendance = useQuery(api.periodAttendance.getForPeriodClassDate, { periodClassId: cls._id });
+  const campers = useQuery(api.campers.list);
+  const checkIn = useMutation(api.periodAttendance.checkIn);
+  const undoCheckIn = useMutation(api.periodAttendance.undoCheckIn);
+  const [selected, setSelected] = useState<CamperDoc | null>(null);
+
+  if (roster === undefined || campers === undefined) return <Loading />;
+
+  const camperMap = new Map(campers.map(c => [c._id as string, c]));
+  const rosterCampers = roster
+    .map(r => camperMap.get(r.camperId as string))
+    .filter((c): c is CamperDoc => !!c)
+    .sort((a, b) => camperName(a).localeCompare(camperName(b)));
+  const checkedCount = rosterCampers.filter(c => (attendance ?? []).find(a => a.camperId === c._id)?.checkedIn).length;
+
+  return (
+    <>
+      <div className="space-y-3">
+        <div className="flex items-baseline justify-between">
+          <div>
+            <h3 className="text-2xl font-bold" style={{ color: "#023B64" }}>{cls.className}</h3>
+            <p className="text-slate-500 text-sm">{PERIOD_LABEL[cls.period] ?? cls.period}{cls.location ? ` · ${cls.location}` : ""}</p>
+          </div>
+          <span className="text-slate-500 text-sm font-medium">{checkedCount} / {rosterCampers.length}</span>
+        </div>
+
+        {rosterCampers.length === 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
+            No campers scheduled for this class.
+          </div>
+        )}
+
+        <div className="space-y-2">
+          {rosterCampers.map(c => {
+            const att = (attendance ?? []).find(a => a.camperId === c._id);
+            const checked = att?.checkedIn === true;
+            const presence = getCampusPresence(c);
+            return (
+              <div key={c._id} className="bg-white rounded-2xl border border-slate-200 flex items-center gap-3 px-4 py-3">
+                <button onClick={() => setSelected(c)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white flex-shrink-0 overflow-hidden" style={{ backgroundColor: avatarBg(c.name) }}>
+                    {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-semibold text-slate-900 text-sm">{camperName(c)}</span>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${presence.status === "Here" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{presence.label}</span>
+                    </div>
+                    <p className="text-xs text-slate-500">{c.bunk}{checked && att?.checkedInAt ? ` · ${fmt(att.checkedInAt)}` : ""}</p>
+                    <AttendanceNoteLine note={c.attendanceNote} />
+                  </div>
+                </button>
+                <button onClick={async () => { if (checked && att) await undoCheckIn({ id: att._id }); else await checkIn({ camperId: c._id, period: cls.period, className: cls.className, periodClassId: cls._id, staffId: staffName }); }}
+                  className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors flex-shrink-0 ${checked ? "bg-green-500 text-white" : "bg-slate-100 active:bg-slate-200"}`}>
+                  {checked && <Check size={18} strokeWidth={3} />}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode />}
+    </>
   );
 }
 
@@ -3008,8 +3342,8 @@ function Admin() {
   const camperMap = new Map<string, CamperDoc>();
   for (const c of campers) camperMap.set(c._id, c);
 
-  const activeCampers = campers.filter(c => c.isActive !== false);
-  const inactiveCampers = campers.filter(c => c.isActive === false);
+  const activeCampers = campers.filter(c => c.isActive !== false && !c.isExternal);
+  const inactiveCampers = campers.filter(c => c.isActive === false && !c.isExternal);
 
   const filtered = campers.filter(c => {
     if (tab === "manage") {
@@ -3521,6 +3855,20 @@ function AdminTodayChanges({ overrides, futureOverrides, camperMap, campers, onS
 
 // ─── Period Management ────────────────────────────────────────────────────────
 
+// Split a single full-name cell into first / last.
+// Handles "First Last", "First Middle Last" (first token = first), and "Last, First".
+function parseFullName(raw: string): { first: string; last: string } {
+  const s = raw.trim();
+  if (!s) return { first: "", last: "" };
+  if (s.includes(",")) {
+    const [last, first] = s.split(",").map(p => p.trim());
+    return { first: first ?? "", last: last ?? "" };
+  }
+  const parts = s.split(/\s+/);
+  if (parts.length === 1) return { first: parts[0], last: "" };
+  return { first: parts[0], last: parts.slice(1).join(" ") };
+}
+
 type PeriodTab = "classes" | "schedules" | "upload" | "history";
 
 function PeriodManagement() {
@@ -3547,6 +3895,7 @@ function PeriodManagement() {
   const createBatch = useMutation(api.uploadBatches.create);
 
   const [tab, setTab] = useState<PeriodTab>("classes");
+  const [dayType, setDayType] = useState<"MonThu" | "Friday">("MonThu");
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [periodFilter, setPeriodFilter] = useState<string>("all");
@@ -3568,7 +3917,7 @@ function PeriodManagement() {
   const [scheduleSearch, setScheduleSearch] = useState("");
   const [selectedCamperId, setSelectedCamperId] = useState<string | null>(null);
   const selectedCamperSchedule = useQuery(api.periodScheduleRecords.getActiveForCamper,
-    selectedCamperId ? { camperId: selectedCamperId as never } : "skip");
+    selectedCamperId ? { camperId: selectedCamperId as never, dayType } : "skip");
   const selectedCamperAttendance = useQuery(api.periodAttendance.getForCamperDate,
     selectedCamperId ? { camperId: selectedCamperId as never } : "skip");
 
@@ -3578,9 +3927,28 @@ function PeriodManagement() {
   const selectedClassAttendance = useQuery(api.periodAttendance.getForPeriodClassDate,
     selectedClassId ? { periodClassId: selectedClassId as never } : "skip");
 
-  const upperCampers = useMemo(() => {
-    const ubs = new Set((campStructureForPeriods ?? []).filter(s => s.division === "Upper Camp" && s.isActive !== false).map(s => s.bunk));
-    return (campers ?? []).filter(c => c.isActive !== false && ubs.has(c.bunk));
+  // Upper Camp roster derived from the camp structure: the ordered list of
+  // "Upper Camp" division bunks, with each bunk's active campers grouped under it.
+  const { upperCampers, upperBunkGroups } = useMemo(() => {
+    const upperRows = (campStructureForPeriods ?? [])
+      .filter(s => s.division === "Upper Camp" && s.isActive !== false)
+      .sort((a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999) || a.bunk.localeCompare(b.bunk));
+    const orderedBunks: string[] = [];
+    const byBunk = new Map<string, CamperDoc[]>();
+    for (const s of upperRows) {
+      if (!byBunk.has(s.bunk)) { byBunk.set(s.bunk, []); orderedBunks.push(s.bunk); }
+    }
+    const flat: CamperDoc[] = [];
+    for (const c of (campers ?? [])) {
+      if (c.isActive === false || !byBunk.has(c.bunk)) continue;
+      byBunk.get(c.bunk)!.push(c);
+      flat.push(c);
+    }
+    for (const arr of byBunk.values()) arr.sort((a, b) => camperName(a).localeCompare(camperName(b)));
+    const groups = orderedBunks
+      .map(bunk => ({ bunk, campers: byBunk.get(bunk)! }))
+      .filter(g => g.campers.length > 0);
+    return { upperCampers: flat, upperBunkGroups: groups };
   }, [campers, campStructureForPeriods]);
 
   if (periodClassList === undefined || campers === undefined) return <Loading />;
@@ -3596,8 +3964,11 @@ function PeriodManagement() {
     camperByName.set(bunkKey, c);
   }
 
-  const activeClasses = periodClassList.filter(c => showInactive || (c.isActive !== false && c.isArchived !== true));
-  const periods = [...new Set(periodClassList.map(c => c.period))].sort();
+  // A class with no dayType is legacy Mon–Thu data.
+  const dtOf = (c: { dayType?: string }) => (c.dayType === "Friday" ? "Friday" : "MonThu");
+  const dayClasses = periodClassList.filter(c => dtOf(c) === dayType);
+  const activeClasses = dayClasses.filter(c => showInactive || (c.isActive !== false && c.isArchived !== true));
+  const periods = [...new Set(dayClasses.map(c => c.period))].sort();
   const filteredClasses = activeClasses.filter(c => {
     if (periodFilter !== "all" && c.period !== periodFilter) return false;
     if (q) {
@@ -3608,8 +3979,9 @@ function PeriodManagement() {
   });
 
   const PERIOD_UPLOAD_FIELDS = [
-    { key: "preferredName", label: "Preferred Name", required: true },
-    { key: "lastName", label: "Last Name", required: true },
+    { key: "fullName", label: "Full Name", required: false },
+    { key: "preferredName", label: "Preferred Name", required: false },
+    { key: "lastName", label: "Last Name", required: false },
     { key: "bunk", label: "Bunk", required: false },
     { key: "period1", label: "Period 1", required: false },
     { key: "period2", label: "Period 2", required: false },
@@ -3628,14 +4000,21 @@ function PeriodManagement() {
       const parsed = parseCsv(ev.target?.result as string);
       setCsvData(parsed);
       setUploadResult(null);
+      // Common header aliases per field (normalized: lowercase, alphanumerics only).
+      const ALIASES: Record<string, string[]> = {
+        fullName: ["fullname", "name", "campername", "camper", "studentname", "student"],
+        preferredName: ["preferredname", "firstname", "first", "nickname"],
+        lastName: ["lastname", "last", "surname"],
+        bunk: ["bunk", "group", "cabin"],
+      };
       const autoMap: Record<string, string> = {};
       for (const field of PERIOD_UPLOAD_FIELDS) {
-        const match = parsed.headers.find(h => {
-          const norm = h.toLowerCase().replace(/[^a-z0-9]/g, "");
-          return norm === field.key.toLowerCase() || norm === field.label.toLowerCase().replace(/[^a-z0-9]/g, "");
-        });
+        const aliases = ALIASES[field.key] ?? [field.key.toLowerCase(), field.label.toLowerCase().replace(/[^a-z0-9]/g, "")];
+        const match = parsed.headers.find(h => aliases.includes(h.toLowerCase().replace(/[^a-z0-9]/g, "")));
         if (match) autoMap[field.key] = match;
       }
+      // Don't claim a plain "Name" column as full name if separate first/last were found.
+      if (autoMap.fullName && autoMap.preferredName && autoMap.lastName) delete autoMap.fullName;
       setPeriodMapping(autoMap);
       setUploadStep("map");
     };
@@ -3643,7 +4022,8 @@ function PeriodManagement() {
     e.target.value = "";
   };
 
-  const periodRequiredMapped = PERIOD_UPLOAD_FIELDS.filter(f => f.required).every(f => periodMapping[f.key]);
+  // Need a way to identify the camper: either a Full Name column, or a Preferred Name column.
+  const periodRequiredMapped = !!periodMapping.fullName || !!periodMapping.preferredName;
 
   const handleUpload = async () => {
     if (!csvData) return;
@@ -3653,18 +4033,30 @@ function PeriodManagement() {
 
     for (let i = 0; i < csvData.rows.length; i++) {
       const row = csvData.rows[i];
-      const firstName = periodMapping.preferredName ? (row[periodMapping.preferredName]?.trim() ?? "") : "";
-      const lastName = periodMapping.lastName ? (row[periodMapping.lastName]?.trim() ?? "") : "";
+      let firstName = periodMapping.preferredName ? (row[periodMapping.preferredName]?.trim() ?? "") : "";
+      let lastName = periodMapping.lastName ? (row[periodMapping.lastName]?.trim() ?? "") : "";
       const bunk = periodMapping.bunk ? (row[periodMapping.bunk]?.trim() ?? "") : "";
 
-      const searchKey = `${firstName} ${lastName}`.trim().toLowerCase();
-      let camper = camperByName.get(searchKey) ?? camperByName.get(firstName.toLowerCase());
-      if (!camper && bunk) {
-        camper = campers.find(c => (c.preferredName ?? c.name).toLowerCase() === firstName.toLowerCase() && (c.lastName ?? "").toLowerCase() === lastName.toLowerCase() && c.bunk === bunk);
+      // Single "Full Name" column: parse into first/last (separate columns win if also present).
+      const rawFull = periodMapping.fullName ? (row[periodMapping.fullName]?.trim() ?? "") : "";
+      if (rawFull) {
+        const parsed = parseFullName(rawFull);
+        if (!firstName) firstName = parsed.first;
+        if (!lastName) lastName = parsed.last;
       }
 
-      if (!camper) { errors.push(`Row ${i + 2}: "${firstName} ${lastName}" not found`); continue; }
-      if (camper.isActive === false) { errors.push(`Row ${i + 2}: "${firstName} ${lastName}" is inactive — skipped`); continue; }
+      const display = `${firstName} ${lastName}`.trim() || rawFull;
+      const searchKey = `${firstName} ${lastName}`.trim().toLowerCase();
+      let camper = camperByName.get(searchKey)
+        ?? (rawFull ? camperByName.get(rawFull.toLowerCase()) : undefined)
+        ?? camperByName.get(firstName.toLowerCase());
+      if (!camper && bunk) {
+        camper = camperByName.get(`${searchKey}::${bunk.toLowerCase()}`)
+          ?? campers.find(c => (c.preferredName ?? c.name).toLowerCase() === firstName.toLowerCase() && (c.lastName ?? "").toLowerCase() === lastName.toLowerCase() && c.bunk === bunk);
+      }
+
+      if (!camper) { errors.push(`Row ${i + 2}: "${display}" not found`); continue; }
+      if (camper.isActive === false) { errors.push(`Row ${i + 2}: "${display}" is inactive — skipped`); continue; }
 
       for (let p = 1; p <= 7; p++) {
         const key = `period${p}`;
@@ -3672,8 +4064,8 @@ function PeriodManagement() {
           const className = row[periodMapping[key]]?.trim();
           if (className) {
             try {
-              const classId = await getOrCreateClass({ period: `Period${p}`, className });
-              await assignSchedule({ camperId: camper._id, period: `Period${p}`, periodClassId: classId, classNameSnapshot: className, source: "upload" });
+              const classId = await getOrCreateClass({ period: `Period${p}`, className, dayType });
+              await assignSchedule({ camperId: camper._id, period: `Period${p}`, periodClassId: classId, classNameSnapshot: className, dayType, source: "upload" });
               created++;
             } catch { errors.push(`Row ${i + 2}: failed to assign Period ${p}`); }
           }
@@ -3705,7 +4097,21 @@ function PeriodManagement() {
       <div className="flex items-center gap-2">
         <Calendar size={22} className="text-slate-700" />
         <h2 className="text-xl font-bold text-slate-900">Periods</h2>
-        <span className="text-sm text-slate-400 ml-1">{periodClassList.length} classes</span>
+        <span className="text-sm text-slate-400 ml-1">{dayClasses.length} classes</span>
+      </div>
+
+      {/* Mon–Thu vs Friday schedule selector — scopes every tab below. */}
+      <div className="flex gap-1.5 bg-slate-100 rounded-2xl p-1.5">
+        {([
+          { id: "MonThu", label: "Mon–Thu" },
+          { id: "Friday", label: "Friday" },
+        ] as const).map(d => (
+          <button key={d.id} onClick={() => { setDayType(d.id); setSelectedClassId(null); setSelectedCamperId(null); setPeriodFilter("all"); }}
+            className="flex-1 py-2 rounded-xl text-sm font-bold transition-colors"
+            style={dayType === d.id ? { backgroundColor: "#F59E0B", color: "#fff" } : { color: "#64748b" }}>
+            {d.label}
+          </button>
+        ))}
       </div>
 
       <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5">
@@ -3903,20 +4309,37 @@ function PeriodManagement() {
               </div>
             );
           })() : (
-            <div className="space-y-2">
-              {upperCampers.filter(c => { if (!scheduleSearch) return true; const s = scheduleSearch.toLowerCase(); return camperName(c).toLowerCase().includes(s) || c.bunk.toLowerCase().includes(s); }).slice(0, 30).map(c => (
-                <button key={c._id} onClick={() => setSelectedCamperId(c._id)}
-                  className="w-full text-left bg-white border border-slate-200 rounded-2xl px-4 py-3 flex items-center gap-3 active:bg-slate-50">
-                  <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white flex-shrink-0 overflow-hidden" style={{ backgroundColor: avatarBg(c.name) }}>
-                    {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+            <div className="space-y-4">
+              {(() => {
+                const s = scheduleSearch.trim().toLowerCase();
+                const groups = upperBunkGroups
+                  .map(g => ({
+                    bunk: g.bunk,
+                    campers: s ? g.campers.filter(c => camperName(c).toLowerCase().includes(s) || g.bunk.toLowerCase().includes(s)) : g.campers,
+                  }))
+                  .filter(g => g.campers.length > 0);
+                return groups.map(g => (
+                  <div key={g.bunk} className="space-y-2">
+                    <div className="flex items-center gap-2 px-1">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{g.bunk}</p>
+                      <span className="text-[10px] text-slate-400">{g.campers.length}</span>
+                    </div>
+                    {g.campers.map(c => (
+                      <button key={c._id} onClick={() => setSelectedCamperId(c._id)}
+                        className="w-full text-left bg-white border border-slate-200 rounded-2xl px-4 py-3 flex items-center gap-3 active:bg-slate-50">
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white flex-shrink-0 overflow-hidden" style={{ backgroundColor: avatarBg(c.name) }}>
+                          {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-slate-900 text-sm">{camperName(c)}</p>
+                          <p className="text-xs text-slate-500">{c.bunk}</p>
+                        </div>
+                        <ChevronRight size={16} className="text-slate-300" />
+                      </button>
+                    ))}
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-slate-900 text-sm">{camperName(c)}</p>
-                    <p className="text-xs text-slate-500">{c.bunk}</p>
-                  </div>
-                  <ChevronRight size={16} className="text-slate-300" />
-                </button>
-              ))}
+                ));
+              })()}
               {upperCampers.length === 0 && <p className="text-center text-slate-400 py-8">No Upper Camp campers found.</p>}
             </div>
           )}
@@ -3926,11 +4349,17 @@ function PeriodManagement() {
       {/* ── Upload Tab ── */}
       {tab === "upload" && (
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div className="px-4 py-2.5 flex items-center gap-2 border-b border-amber-100" style={{ backgroundColor: "#FEF3C7" }}>
+            <span className="text-xs font-bold" style={{ color: "#B45309" }}>
+              Uploading to: {dayType === "Friday" ? "Friday" : "Mon–Thu"} schedule
+            </span>
+            <span className="text-[11px] text-amber-700/70 ml-auto">switch above</span>
+          </div>
           {(!uploadStep || uploadStep === "pick") && (
             <div className="p-4 space-y-4">
               <div>
                 <p className="text-sm font-semibold text-slate-700">Upload Upper Camp period schedule</p>
-                <p className="text-xs text-slate-400 mt-1">CSV: Preferred Name, Last Name, Bunk, Period 1–7</p>
+                <p className="text-xs text-slate-400 mt-1">CSV: a Full Name column (or separate First/Last), optional Bunk, and Period 1–7. Friday may use fewer periods — just map the columns present.</p>
               </div>
               <label className="inline-block text-xs font-semibold text-white px-3 py-2 rounded-xl cursor-pointer active:opacity-80"
                 style={{ backgroundColor: "#023B64" }}>
@@ -3976,7 +4405,8 @@ function PeriodManagement() {
                 <p className="text-sm font-semibold text-slate-700">Preview · {csvData.rows.length} campers</p>
               </div>
               {csvData.rows.slice(0, 5).map((row, i) => {
-                const name = `${row[periodMapping.preferredName]?.trim() ?? ""} ${row[periodMapping.lastName]?.trim() ?? ""}`.trim();
+                const name = (periodMapping.fullName ? (row[periodMapping.fullName]?.trim() ?? "") : "")
+                  || `${row[periodMapping.preferredName]?.trim() ?? ""} ${row[periodMapping.lastName]?.trim() ?? ""}`.trim();
                 const periods = [];
                 for (let p = 1; p <= 7; p++) { const k = `period${p}`; if (periodMapping[k]) { const v = row[periodMapping[k]]?.trim(); if (v) periods.push(`P${p}: ${v}`); } }
                 return (
@@ -4059,7 +4489,7 @@ function PeriodManagement() {
                 if (!classForm.className.trim()) { setClassError("Class name is required"); return; }
                 try {
                   if (editingClass) { await updatePeriodClass({ id: editingClass._id, className: classForm.className.trim(), location: classForm.location.trim() || undefined, capacity: classForm.capacity ? parseInt(classForm.capacity) : undefined, notes: classForm.notes.trim() || undefined }); }
-                  else { await createPeriodClass({ period: classForm.period, className: classForm.className.trim(), location: classForm.location.trim() || undefined, capacity: classForm.capacity ? parseInt(classForm.capacity) : undefined, notes: classForm.notes.trim() || undefined }); }
+                  else { await createPeriodClass({ period: classForm.period, className: classForm.className.trim(), dayType, location: classForm.location.trim() || undefined, capacity: classForm.capacity ? parseInt(classForm.capacity) : undefined, notes: classForm.notes.trim() || undefined }); }
                   setAddingClass(false); setEditingClass(null); setClassError("");
                 } catch (e: unknown) { setClassError(e instanceof Error ? e.message : "Save failed"); }
               }} className="w-full py-3 text-sm font-bold text-white rounded-xl" style={{ backgroundColor: "#023B64" }}>
@@ -5498,6 +5928,7 @@ const CAMPER_FIELDS: { key: string; label: string; required: boolean; boolean?: 
   { key: "camperNotes",     label: "Camper Notes",      required: false },
   { key: "busStop",         label: "Bus Stop",          required: false },
   { key: "walkPermission",  label: "Walk Permission",   required: false, boolean: true },
+  { key: "afterCareProgram", label: "After Care Program", required: false },
 ];
 
 const parseBool = (val: string) =>
@@ -5767,6 +6198,9 @@ function CamperUpload() {
 
         const walkPerm = mapping.walkPermission && row[mapping.walkPermission]?.trim();
         if (walkPerm) camper.walkPermission = parseBool(walkPerm);
+
+        const acProgram = mapping.afterCareProgram && row[mapping.afterCareProgram]?.trim();
+        if (acProgram) camper.afterCareProgram = acProgram;
 
         await createCamper(camper as Parameters<typeof createCamper>[0]);
         added++;

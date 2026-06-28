@@ -1,5 +1,8 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { normDayType } from "./periodDays";
+
+const DAY_TYPE = v.union(v.literal("MonThu"), v.literal("Friday"));
 
 export const list = query({
   args: {},
@@ -9,30 +12,55 @@ export const list = query({
 });
 
 export const getActive = query({
-  args: {},
-  handler: async (ctx) => {
+  args: { dayType: v.optional(DAY_TYPE) },
+  handler: async (ctx, { dayType }) => {
     const all = await ctx.db.query("periodClasses").collect();
-    return all.filter((c) => c.isActive !== false && c.isArchived !== true);
+    return all.filter(
+      (c) =>
+        c.isActive !== false &&
+        c.isArchived !== true &&
+        (dayType === undefined || normDayType(c.dayType) === dayType),
+    );
+  },
+});
+
+// All active classes a given staff member teaches, optionally scoped to a dayType.
+export const getForStaff = query({
+  args: { staffId: v.string(), dayType: v.optional(DAY_TYPE) },
+  handler: async (ctx, { staffId, dayType }) => {
+    const all = await ctx.db.query("periodClasses").collect();
+    return all.filter(
+      (c) =>
+        c.isActive !== false &&
+        c.isArchived !== true &&
+        (c.assignedStaffIds ?? []).includes(staffId) &&
+        (dayType === undefined || normDayType(c.dayType) === dayType),
+    );
   },
 });
 
 export const getByPeriod = query({
-  args: { period: v.string() },
-  handler: async (ctx, { period }) => {
-    return await ctx.db
+  args: { period: v.string(), dayType: v.optional(DAY_TYPE) },
+  handler: async (ctx, { period, dayType }) => {
+    const all = await ctx.db
       .query("periodClasses")
       .withIndex("by_period", (q) => q.eq("period", period))
       .collect();
+    return dayType === undefined
+      ? all
+      : all.filter((c) => normDayType(c.dayType) === dayType);
   },
 });
 
 export const getByPeriodClass = query({
-  args: { period: v.string(), className: v.string() },
-  handler: async (ctx, { period, className }) => {
-    return await ctx.db
+  args: { period: v.string(), className: v.string(), dayType: v.optional(DAY_TYPE) },
+  handler: async (ctx, { period, className, dayType }) => {
+    const matches = await ctx.db
       .query("periodClasses")
       .withIndex("by_period_class", (q) => q.eq("period", period).eq("className", className))
-      .first();
+      .collect();
+    const dt = dayType ?? "MonThu";
+    return matches.find((c) => normDayType(c.dayType) === dt) ?? null;
   },
 });
 
@@ -40,6 +68,7 @@ export const create = mutation({
   args: {
     period: v.string(),
     className: v.string(),
+    dayType: v.optional(DAY_TYPE),
     session: v.optional(v.string()),
     location: v.optional(v.string()),
     assignedStaffIds: v.optional(v.array(v.string())),
@@ -48,13 +77,17 @@ export const create = mutation({
     notes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const dayType = normDayType(args.dayType);
     const existing = await ctx.db
       .query("periodClasses")
       .withIndex("by_period_class", (q) => q.eq("period", args.period).eq("className", args.className))
-      .first();
-    if (existing) throw new Error(`${args.period} ${args.className} already exists`);
+      .collect();
+    if (existing.some((c) => normDayType(c.dayType) === dayType)) {
+      throw new Error(`${args.period} ${args.className} already exists for ${dayType === "Friday" ? "Friday" : "Mon–Thu"}`);
+    }
     return await ctx.db.insert("periodClasses", {
       ...args,
+      dayType,
       normalizedClassName: args.className.toLowerCase().trim(),
       isActive: true,
       isArchived: false,
@@ -127,16 +160,19 @@ export const clearAll = mutation({
 });
 
 export const getOrCreate = mutation({
-  args: { period: v.string(), className: v.string(), session: v.optional(v.string()) },
-  handler: async (ctx, { period, className, session }) => {
+  args: { period: v.string(), className: v.string(), dayType: v.optional(DAY_TYPE), session: v.optional(v.string()) },
+  handler: async (ctx, { period, className, dayType, session }) => {
+    const dt = normDayType(dayType);
     const existing = await ctx.db
       .query("periodClasses")
       .withIndex("by_period_class", (q) => q.eq("period", period).eq("className", className))
-      .first();
-    if (existing) return existing._id;
+      .collect();
+    const match = existing.find((c) => normDayType(c.dayType) === dt);
+    if (match) return match._id;
     return await ctx.db.insert("periodClasses", {
       period,
       className,
+      dayType: dt,
       session,
       normalizedClassName: className.toLowerCase().trim(),
       isActive: true,

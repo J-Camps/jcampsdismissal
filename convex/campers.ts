@@ -82,12 +82,12 @@ export const getBeforeCareRoster = query({
   },
 });
 
-// All campers enrolled in After Care (via dismissalMethod or legacy afterCare flag)
+// All campers enrolled in After Care (via dismissalMethod, legacy afterCare flag, or afterCareProgram)
 export const getAfterCareRoster = query({
   args: {},
   handler: async (ctx) => {
     const all = await ctx.db.query("campers").collect();
-    return all.filter((c) => c.dismissalMethod === "After Care" || c.afterCare);
+    return all.filter((c) => c.dismissalMethod === "After Care" || c.afterCare || c.afterCareProgram);
   },
 });
 
@@ -151,6 +151,7 @@ export const create = mutation({
     periodGroups: v.optional(v.record(v.string(), v.string())),
     busStop: v.optional(v.string()),
     walkPermission: v.optional(v.boolean()),
+    afterCareProgram: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("campers", {
@@ -681,6 +682,7 @@ export const adminUpdate = mutation({
     isActive: v.optional(v.boolean()),
     busStop: v.optional(v.string()),
     walkPermission: v.optional(v.boolean()),
+    afterCareProgram: v.optional(v.string()),
   },
   handler: async (ctx, { id, staffName, allergyDetails, camperNotes, preferredName, ...fields }) => {
     const camper = await ctx.db.get(id);
@@ -734,6 +736,8 @@ export const adminCreate = mutation({
     lunchInfo: v.optional(v.string()),
     busStop: v.optional(v.string()),
     walkPermission: v.optional(v.boolean()),
+    afterCareProgram: v.optional(v.string()),
+    isExternal: v.optional(v.boolean()),
     staffName: v.string(),
   },
   handler: async (ctx, { staffName, allergyDetails, camperNotes, ...args }) => {

@@ -1,5 +1,6 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { dayTypeForDate } from "./periodDays";
 
 const today = () => new Date().toISOString().split("T")[0];
 
@@ -62,6 +63,7 @@ export const checkIn = mutation({
         checkedInByStaffId: staffId,
         classNameSnapshot: className,
         periodClassId,
+        dayType: dayTypeForDate(d),
         updatedAt: Date.now(),
       });
       return match._id;
@@ -74,6 +76,7 @@ export const checkIn = mutation({
       className,
       classNameSnapshot: className,
       periodClassId,
+      dayType: dayTypeForDate(d),
       checkedIn: true,
       checkedInAt: Date.now(),
       checkedInByStaffId: staffId,
