@@ -27,27 +27,42 @@ export const getForClassDate = query({
   },
 });
 
+export const getForPeriodClassDate = query({
+  args: { periodClassId: v.id("periodClasses"), date: v.optional(v.string()) },
+  handler: async (ctx, { periodClassId, date }) => {
+    const d = date ?? today();
+    return await ctx.db
+      .query("periodAttendanceRecords")
+      .withIndex("by_class_date", (q) => q.eq("periodClassId", periodClassId).eq("date", d))
+      .collect();
+  },
+});
+
 export const checkIn = mutation({
   args: {
     camperId: v.id("campers"),
     period: v.string(),
     className: v.string(),
+    periodClassId: v.optional(v.id("periodClasses")),
     staffId: v.optional(v.string()),
     date: v.optional(v.string()),
   },
-  handler: async (ctx, { camperId, period, className, staffId, date }) => {
+  handler: async (ctx, { camperId, period, className, periodClassId, staffId, date }) => {
     const d = date ?? today();
     const existing = await ctx.db
       .query("periodAttendanceRecords")
       .withIndex("by_camper_date", (q) => q.eq("camperId", camperId).eq("date", d))
       .collect();
-    const match = existing.find((r) => r.period === period && r.className === className);
+    const match = existing.find((r) => r.period === period);
 
     if (match) {
       await ctx.db.patch(match._id, {
         checkedIn: true,
         checkedInAt: Date.now(),
         checkedInByStaffId: staffId,
+        classNameSnapshot: className,
+        periodClassId,
+        updatedAt: Date.now(),
       });
       return match._id;
     }
@@ -57,6 +72,8 @@ export const checkIn = mutation({
       date: d,
       period,
       className,
+      classNameSnapshot: className,
+      periodClassId,
       checkedIn: true,
       checkedInAt: Date.now(),
       checkedInByStaffId: staffId,
@@ -65,12 +82,25 @@ export const checkIn = mutation({
 });
 
 export const undoCheckIn = mutation({
-  args: { id: v.id("periodAttendanceRecords") },
-  handler: async (ctx, { id }) => {
+  args: { id: v.id("periodAttendanceRecords"), staffId: v.optional(v.string()), reason: v.optional(v.string()) },
+  handler: async (ctx, { id, staffId, reason }) => {
     await ctx.db.patch(id, {
       checkedIn: false,
       checkedInAt: undefined,
       checkedInByStaffId: undefined,
+      overrideReason: reason,
+      updatedAt: Date.now(),
     });
+  },
+});
+
+export const hasHistoryForClass = query({
+  args: { periodClassId: v.id("periodClasses") },
+  handler: async (ctx, { periodClassId }) => {
+    const rec = await ctx.db
+      .query("periodAttendanceRecords")
+      .withIndex("by_class_date", (q) => q.eq("periodClassId", periodClassId))
+      .first();
+    return !!rec;
   },
 });

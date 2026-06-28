@@ -3495,23 +3495,69 @@ function AdminTodayChanges({ overrides, futureOverrides, camperMap, campers, onS
 
 // ─── Period Management ────────────────────────────────────────────────────────
 
+type PeriodTab = "classes" | "schedules" | "upload" | "history";
+
 function PeriodManagement() {
-  const classes = useQuery(api.periodSchedules.getClasses);
+  const periodClassList = useQuery(api.periodClasses.list);
   const campers = useQuery(api.campers.list);
-  const allSchedules = useQuery(api.periodSchedules.list);
-  const bulkAssign = useMutation(api.periodSchedules.bulkAssign);
+  const staffList = useQuery(api.staff.list);
+  const campStructureForPeriods = useQuery(api.campStructure.list);
+  const allScheduleRecords = useQuery(api.periodScheduleRecords.getForCamper, "skip");
+  const uploadHistory = useQuery(api.uploadBatches.list, { type: "period" });
+  const createPeriodClass = useMutation(api.periodClasses.create);
+  const updatePeriodClass = useMutation(api.periodClasses.update);
+  const archivePeriodClass = useMutation(api.periodClasses.archive);
+  const removePeriodClass = useMutation(api.periodClasses.remove);
+  const assignStaffMut = useMutation(api.periodClasses.assignStaff);
+  const getOrCreateClass = useMutation(api.periodClasses.getOrCreate);
+  const assignSchedule = useMutation(api.periodScheduleRecords.assign);
+  const endAssignment = useMutation(api.periodScheduleRecords.endAssignment);
+  const removeScheduleRecord = useMutation(api.periodScheduleRecords.remove);
+  const clearCamperSchedules = useMutation(api.periodScheduleRecords.clearForCamper);
+  const clearAllSchedules = useMutation(api.periodScheduleRecords.clearAll);
+  const clearEverything = useMutation(api.periodClasses.clearAll);
   const checkInMut = useMutation(api.periodAttendance.checkIn);
   const undoCheckInMut = useMutation(api.periodAttendance.undoCheckIn);
-  const [selectedClass, setSelectedClass] = useState<{ period: string; className: string } | null>(null);
-  const periodAttRecords = useQuery(api.periodAttendance.getForClassDate,
-    selectedClass ? { period: selectedClass.period, className: selectedClass.className } : "skip");
+  const createBatch = useMutation(api.uploadBatches.create);
+
+  const [tab, setTab] = useState<PeriodTab>("classes");
+  const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
+  const [q, setQ] = useState("");
+  const [periodFilter, setPeriodFilter] = useState<string>("all");
+  const [showInactive, setShowInactive] = useState(false);
+  const [addingClass, setAddingClass] = useState(false);
+  const [editingClass, setEditingClass] = useState<Doc<"periodClasses"> | null>(null);
+  const [classForm, setClassForm] = useState({ period: "Period1", className: "", location: "", capacity: "", notes: "" });
+  const [classError, setClassError] = useState("");
+  const [assigningStaff, setAssigningStaff] = useState(false);
+
+  // Upload state
   const [uploadStep, setUploadStep] = useState<"pick" | "map" | "preview" | null>(null);
   const [csvData, setCsvData] = useState<{ headers: string[]; rows: CsvRow[] } | null>(null);
   const [periodMapping, setPeriodMapping] = useState<Record<string, string>>({});
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<{ created: number; updated: number; errors: string[] } | null>(null);
 
-  if (classes === undefined || campers === undefined) return <Loading />;
+  // Camper schedule state
+  const [scheduleSearch, setScheduleSearch] = useState("");
+  const [selectedCamperId, setSelectedCamperId] = useState<string | null>(null);
+  const selectedCamperSchedule = useQuery(api.periodScheduleRecords.getActiveForCamper,
+    selectedCamperId ? { camperId: selectedCamperId as never } : "skip");
+  const selectedCamperAttendance = useQuery(api.periodAttendance.getForCamperDate,
+    selectedCamperId ? { camperId: selectedCamperId as never } : "skip");
+
+  // Class roster state
+  const selectedClassRoster = useQuery(api.periodScheduleRecords.getForClass,
+    selectedClassId ? { periodClassId: selectedClassId as never } : "skip");
+  const selectedClassAttendance = useQuery(api.periodAttendance.getForPeriodClassDate,
+    selectedClassId ? { periodClassId: selectedClassId as never } : "skip");
+
+  const upperCampers = useMemo(() => {
+    const ubs = new Set((campStructureForPeriods ?? []).filter(s => s.division === "Upper Camp" && s.isActive !== false).map(s => s.bunk));
+    return (campers ?? []).filter(c => c.isActive !== false && ubs.has(c.bunk));
+  }, [campers, campStructureForPeriods]);
+
+  if (periodClassList === undefined || campers === undefined) return <Loading />;
 
   const camperMap = new Map<string, CamperDoc>();
   for (const c of campers) camperMap.set(c._id, c);
@@ -3520,9 +3566,22 @@ function PeriodManagement() {
     const full = `${(c.preferredName ?? c.name).toLowerCase()} ${(c.lastName ?? "").toLowerCase()}`.trim();
     camperByName.set(full, c);
     camperByName.set((c.preferredName ?? c.name).toLowerCase(), c);
+    const bunkKey = `${full}::${c.bunk.toLowerCase()}`;
+    camperByName.set(bunkKey, c);
   }
 
-  const PERIOD_UPLOAD_FIELDS: { key: string; label: string; required: boolean }[] = [
+  const activeClasses = periodClassList.filter(c => showInactive || (c.isActive !== false && c.isArchived !== true));
+  const periods = [...new Set(periodClassList.map(c => c.period))].sort();
+  const filteredClasses = activeClasses.filter(c => {
+    if (periodFilter !== "all" && c.period !== periodFilter) return false;
+    if (q) {
+      const low = q.toLowerCase();
+      if (!c.className.toLowerCase().includes(low) && !c.period.toLowerCase().includes(low)) return false;
+    }
+    return true;
+  });
+
+  const PERIOD_UPLOAD_FIELDS = [
     { key: "preferredName", label: "Preferred Name", required: true },
     { key: "lastName", label: "Last Name", required: true },
     { key: "bunk", label: "Bunk", required: false },
@@ -3533,7 +3592,7 @@ function PeriodManagement() {
     { key: "period5", label: "Period 5", required: false },
     { key: "period6", label: "Period 6", required: false },
     { key: "period7", label: "Period 7", required: false },
-  ];
+  ] as const;
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -3564,7 +3623,7 @@ function PeriodManagement() {
     if (!csvData) return;
     setUploading(true);
     const errors: string[] = [];
-    const assignments: { camperId: string; period: string; className: string }[] = [];
+    let created = 0;
 
     for (let i = 0; i < csvData.rows.length; i++) {
       const row = csvData.rows[i];
@@ -3579,45 +3638,269 @@ function PeriodManagement() {
       }
 
       if (!camper) { errors.push(`Row ${i + 2}: "${firstName} ${lastName}" not found`); continue; }
-
-      const isUpper = (camper.camp ?? "").toLowerCase().includes("upper") || (camper.campSection ?? "") === "Upper" || (camper.campDivision ?? "").toLowerCase().includes("upper");
-      if (!isUpper) { errors.push(`Row ${i + 2}: "${firstName} ${lastName}" is not Upper Camp — skipped`); continue; }
+      if (camper.isActive === false) { errors.push(`Row ${i + 2}: "${firstName} ${lastName}" is inactive — skipped`); continue; }
 
       for (let p = 1; p <= 7; p++) {
         const key = `period${p}`;
         if (periodMapping[key]) {
           const className = row[periodMapping[key]]?.trim();
-          if (className) assignments.push({ camperId: camper._id, period: `Period${p}`, className });
+          if (className) {
+            try {
+              const classId = await getOrCreateClass({ period: `Period${p}`, className });
+              await assignSchedule({ camperId: camper._id, period: `Period${p}`, periodClassId: classId, classNameSnapshot: className, source: "upload" });
+              created++;
+            } catch { errors.push(`Row ${i + 2}: failed to assign Period ${p}`); }
+          }
         }
       }
     }
 
-    let result = { created: 0, updated: 0 };
-    if (assignments.length > 0) { result = await bulkAssign({ assignments: assignments as never }); }
-    setUploadResult({ ...result, errors });
+    if (created > 0) {
+      await createBatch({ type: "period", rowsImported: created, rowsSkipped: errors.length, warnings: 0, errors: errors.length });
+    }
+    setUploadResult({ created, updated: 0, errors });
     setUploading(false);
   };
 
-  const rosterCamperIds = selectedClass
-    ? (allSchedules ?? []).filter(s => s.period === selectedClass.period && s.className === selectedClass.className).map(s => s.camperId)
-    : [];
-  const rosterCampers = rosterCamperIds.map(id => camperMap.get(id as string)).filter(Boolean) as CamperDoc[];
+  const rosterCampers = (selectedClassRoster ?? []).map(r => camperMap.get(r.camperId as string)).filter(Boolean) as CamperDoc[];
+
+  const periodTabs: { id: PeriodTab; label: string }[] = [
+    { id: "classes", label: "Classes" },
+    { id: "schedules", label: "Schedules" },
+    { id: "upload", label: "Upload" },
+    { id: "history", label: "History" },
+  ];
+
+  const inp = "w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none";
+  const lbl = "text-xs font-semibold text-slate-500 mb-1 block";
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <Calendar size={22} className="text-slate-700" />
         <h2 className="text-xl font-bold text-slate-900">Periods</h2>
-        <span className="text-sm text-slate-400 ml-1">{classes.length} classes</span>
-        <button onClick={() => setUploadStep(uploadStep ? null : "pick")}
-          className="ml-auto text-xs font-semibold px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-600 active:bg-slate-50">
-          {uploadStep ? "View Classes" : "Upload Schedule"}
-        </button>
+        <span className="text-sm text-slate-400 ml-1">{periodClassList.length} classes</span>
       </div>
 
-      {uploadStep ? (
+      <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5">
+        {periodTabs.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors"
+            style={tab === t.id ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Classes Tab ── */}
+      {tab === "classes" && (
+        <>
+          <div className="flex items-center gap-2">
+            <button onClick={() => { setAddingClass(true); setEditingClass(null); setClassForm({ period: "Period1", className: "", location: "", capacity: "", notes: "" }); setClassError(""); }}
+              className="text-xs font-semibold text-white px-3 py-2 rounded-xl" style={{ backgroundColor: "#023B64" }}>+ Add Class</button>
+            <button onClick={() => setShowInactive(!showInactive)}
+              className={`text-xs font-semibold px-3 py-2 rounded-xl ${showInactive ? "bg-amber-100 text-amber-700" : "bg-white text-slate-500 border border-slate-200"}`}>
+              {showInactive ? "Active Only" : "Show Inactive"}</button>
+            <button onClick={() => { if (confirm("Clear ALL period schedule assignments? Class definitions will be kept.")) clearAllSchedules(); }}
+              className="ml-auto text-xs font-semibold px-3 py-2 rounded-xl bg-red-50 text-red-500 active:bg-red-100">
+              Clear Schedules</button>
+            <button onClick={async () => { if (confirm("DELETE everything? All period classes, all schedule assignments, and all attendance records will be permanently removed.")) { await clearEverything(); } }}
+              className="text-xs font-semibold px-3 py-2 rounded-xl bg-red-100 text-red-600 active:bg-red-200">
+              Delete All</button>
+          </div>
+
+          <div className="flex gap-1.5 overflow-x-auto pb-1">
+            <button onClick={() => setPeriodFilter("all")} className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex-shrink-0 ${periodFilter === "all" ? "text-white" : "bg-white text-slate-500 border border-slate-200"}`} style={periodFilter === "all" ? { backgroundColor: "#023B64" } : undefined}>All</button>
+            {periods.map(p => <button key={p} onClick={() => setPeriodFilter(p)} className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex-shrink-0 ${periodFilter === p ? "text-white" : "bg-white text-slate-500 border border-slate-200"}`} style={periodFilter === p ? { backgroundColor: "#023B64" } : undefined}>{PERIOD_LABEL[p] ?? p}</button>)}
+          </div>
+
+          <div className="relative">
+            <Search size={15} className="absolute left-3 top-3 text-slate-400" />
+            <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search class name…" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm bg-white focus:outline-none" />
+          </div>
+
+          <div className="space-y-2">
+            {filteredClasses.map(cl => {
+              const staffNames = (cl.assignedStaffIds ?? []).map(id => (staffList ?? []).find(s => s._id === id)?.name).filter(Boolean);
+              return (
+                <div key={cl._id} className={`bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden ${cl.isArchived ? "opacity-50" : ""}`}>
+                  <button onClick={() => { setSelectedClassId(cl._id); setAssigningStaff(false); }}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-slate-50">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0" style={{ backgroundColor: "#e0f2fe", color: "#023B64" }}>
+                      {(PERIOD_LABEL[cl.period] ?? cl.period).replace("Period ", "P")}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-slate-900 text-sm">{cl.className}</p>
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        <span className="text-xs text-slate-500">{PERIOD_LABEL[cl.period] ?? cl.period}</span>
+                        {cl.location && <><span className="text-xs text-slate-300">·</span><span className="text-xs text-slate-500">{cl.location}</span></>}
+                        {staffNames.length > 0 ? <span className="text-[10px] text-blue-600 font-semibold">· {staffNames.join(", ")}</span> : <span className="text-[10px] text-amber-500 font-semibold">· No staff</span>}
+                        {cl.isArchived && <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">Archived</span>}
+                      </div>
+                    </div>
+                    <ChevronRight size={16} className="text-slate-300" />
+                  </button>
+                </div>
+              );
+            })}
+            {filteredClasses.length === 0 && <p className="text-center text-slate-400 py-8">No classes found.</p>}
+          </div>
+        </>
+      )}
+
+      {/* ── Class Roster (when a class is selected) ── */}
+      {tab === "classes" && selectedClassId && (() => {
+        const cl = periodClassList.find(c => c._id === selectedClassId);
+        if (!cl) return null;
+        const staffNames = (cl.assignedStaffIds ?? []).map(id => (staffList ?? []).find(s => s._id === id)?.name).filter(Boolean);
+        return (
+          <div className="fixed inset-0 z-50 flex flex-col justify-end">
+            <div className="absolute inset-0 bg-black/60" onClick={() => setSelectedClassId(null)} />
+            <div className="relative bg-white rounded-t-3xl overflow-auto max-h-[85vh]">
+              <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 bg-slate-200 rounded-full" /></div>
+              <div className="px-5 pt-2 pb-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-900">{cl.className}</h3>
+                    <p className="text-xs text-slate-500">{PERIOD_LABEL[cl.period] ?? cl.period}{cl.location ? ` · ${cl.location}` : ""}</p>
+                  </div>
+                  <div className="flex gap-1.5">
+                    <button onClick={() => { setEditingClass(cl); setClassForm({ period: cl.period, className: cl.className, location: cl.location ?? "", capacity: cl.capacity?.toString() ?? "", notes: cl.notes ?? "" }); setClassError(""); setSelectedClassId(null); }}
+                      className="text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-600">Edit</button>
+                    <button onClick={() => setAssigningStaff(!assigningStaff)}
+                      className="text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-600">{assigningStaff ? "Done" : "Staff"}</button>
+                  </div>
+                </div>
+
+                {staffNames.length > 0 && <div className="flex gap-1.5 flex-wrap">{staffNames.map((n, i) => <span key={i} className="text-xs font-semibold px-2 py-1 rounded-lg bg-blue-50 text-blue-700">{n}</span>)}</div>}
+
+                {assigningStaff && (
+                  <div className="bg-slate-50 rounded-xl p-3 space-y-2">
+                    <p className="text-xs font-semibold text-slate-500">Assign staff:</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(staffList ?? []).filter(s => s.isActive !== false).map(s => {
+                        const assigned = (cl.assignedStaffIds ?? []).includes(s._id);
+                        return <button key={s._id} onClick={() => {
+                          const ids = assigned ? (cl.assignedStaffIds ?? []).filter(id => id !== s._id) : [...(cl.assignedStaffIds ?? []), s._id];
+                          assignStaffMut({ id: cl._id, staffIds: ids });
+                        }} className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg ${assigned ? "bg-blue-500 text-white" : "bg-white border border-slate-200 text-slate-600"}`}>{s.name}</button>;
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <p className="text-xs text-slate-400">{rosterCampers.length} campers</p>
+                <div className="space-y-2">
+                  {rosterCampers.map(c => {
+                    const att = (selectedClassAttendance ?? []).find(a => a.camperId === c._id);
+                    const checked = att?.checkedIn === true;
+                    const presence = getCampusPresence(c);
+                    return (
+                      <div key={c._id} className="bg-white rounded-2xl border border-slate-200 flex items-center gap-3 px-4 py-3">
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white flex-shrink-0 overflow-hidden" style={{ backgroundColor: avatarBg(c.name) }}>
+                          {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-slate-900 text-sm">{camperName(c)}</span>
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${presence.status === "Here" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{presence.label}</span>
+                          </div>
+                          <p className="text-xs text-slate-500">{c.bunk}{checked && att?.checkedInAt ? ` · ${fmt(att.checkedInAt)}` : ""}</p>
+                        </div>
+                        <button onClick={async () => { if (checked && att) await undoCheckInMut({ id: att._id }); else await checkInMut({ camperId: c._id, period: cl.period, className: cl.className, periodClassId: cl._id, staffId: "Admin" }); }}
+                          className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${checked ? "bg-green-500 text-white" : "bg-slate-100 active:bg-slate-200"}`}>
+                          {checked && <Check size={18} strokeWidth={3} />}
+                        </button>
+                      </div>
+                    );
+                  })}
+                  {rosterCampers.length === 0 && <p className="text-center text-slate-400 py-6">No campers in this class.</p>}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Schedules Tab ── */}
+      {tab === "schedules" && (
+        <>
+          <div className="relative">
+            <Search size={15} className="absolute left-3 top-3 text-slate-400" />
+            <input value={scheduleSearch} onChange={e => setScheduleSearch(e.target.value)} placeholder="Search Upper camper…" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm bg-white focus:outline-none" />
+          </div>
+          {selectedCamperId ? (() => {
+            const c = camperMap.get(selectedCamperId);
+            if (!c) return null;
+            const presence = getCampusPresence(c);
+            return (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setSelectedCamperId(null)} className="text-sm text-slate-500 flex items-center gap-1">← Back</button>
+                  <button onClick={() => { if (confirm("Clear all period assignments for this camper?")) { clearCamperSchedules({ camperId: selectedCamperId as never }); } }}
+                    className="ml-auto text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-red-50 text-red-500 active:bg-red-100">Clear All</button>
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 rounded-full flex items-center justify-center font-bold text-lg text-white flex-shrink-0 overflow-hidden" style={{ backgroundColor: avatarBg(c.name) }}>
+                    {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+                  </div>
+                  <div>
+                    <p className="font-bold text-slate-900">{camperName(c)}</p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="text-xs text-slate-500">{c.bunk}</span>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${presence.status === "Here" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{presence.label}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {[1,2,3,4,5,6,7].map(p => {
+                    const sched = (selectedCamperSchedule ?? []).find(s => s.period === `Period${p}`);
+                    const att = (selectedCamperAttendance ?? []).find(a => a.period === `Period${p}`);
+                    return (
+                      <div key={p} className="bg-white rounded-2xl border border-slate-200 px-4 py-3 flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-xs flex-shrink-0" style={{ backgroundColor: "#e0f2fe", color: "#023B64" }}>P{p}</div>
+                        <div className="flex-1">
+                          <p className="text-sm font-semibold text-slate-900">{sched?.classNameSnapshot ?? "—"}</p>
+                          {att?.checkedIn && <p className="text-[10px] text-green-600">Checked in {att.checkedInAt ? fmt(att.checkedInAt) : ""}</p>}
+                        </div>
+                        {sched && (
+                          <div className="flex items-center gap-2">
+                            {att?.checkedIn ? <Check size={16} className="text-green-500" /> : <span className="text-[10px] text-slate-400">Not checked in</span>}
+                            <button onClick={() => removeScheduleRecord({ id: sched._id })}
+                              className="text-slate-300 active:text-red-500"><X size={14} /></button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })() : (
+            <div className="space-y-2">
+              {upperCampers.filter(c => { if (!scheduleSearch) return true; const s = scheduleSearch.toLowerCase(); return camperName(c).toLowerCase().includes(s) || c.bunk.toLowerCase().includes(s); }).slice(0, 30).map(c => (
+                <button key={c._id} onClick={() => setSelectedCamperId(c._id)}
+                  className="w-full text-left bg-white border border-slate-200 rounded-2xl px-4 py-3 flex items-center gap-3 active:bg-slate-50">
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white flex-shrink-0 overflow-hidden" style={{ backgroundColor: avatarBg(c.name) }}>
+                    {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-slate-900 text-sm">{camperName(c)}</p>
+                    <p className="text-xs text-slate-500">{c.bunk}</p>
+                  </div>
+                  <ChevronRight size={16} className="text-slate-300" />
+                </button>
+              ))}
+              {upperCampers.length === 0 && <p className="text-center text-slate-400 py-8">No Upper Camp campers found.</p>}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Upload Tab ── */}
+      {tab === "upload" && (
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          {uploadStep === "pick" && (
+          {(!uploadStep || uploadStep === "pick") && (
             <div className="p-4 space-y-4">
               <div>
                 <p className="text-sm font-semibold text-slate-700">Upload Upper Camp period schedule</p>
@@ -3694,67 +3977,71 @@ function PeriodManagement() {
             </div>
           )}
         </div>
-      ) : (
-        <>
-          {selectedClass ? (
-            <div>
-              <button onClick={() => setSelectedClass(null)} className="text-sm text-slate-500 mb-3 flex items-center gap-1">← All Classes</button>
-              <h3 className="text-lg font-bold text-slate-900 mb-1">{selectedClass.className}</h3>
-              <p className="text-xs text-slate-400 mb-3">{PERIOD_LABEL[selectedClass.period] ?? selectedClass.period} · {rosterCampers.length} campers</p>
-              <div className="space-y-2">
-                {rosterCampers.map(c => {
-                  const attRec = (periodAttRecords ?? []).find(r => r.camperId === c._id);
-                  const checked = attRec?.checkedIn === true;
-                  const presence = getCampusPresence(c);
-                  return (
-                    <div key={c._id} className="bg-white rounded-2xl border border-slate-200 flex items-center gap-3 px-4 py-3">
-                      <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white flex-shrink-0 overflow-hidden"
-                        style={{ backgroundColor: avatarBg(c.name) }}>
-                        {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-semibold text-slate-900 text-sm">{camperName(c)}</span>
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${presence.status === "Here" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{presence.label}</span>
-                        </div>
-                        <p className="text-xs text-slate-500">{c.bunk}</p>
-                      </div>
-                      <button onClick={async () => {
-                        if (checked && attRec) { await undoCheckInMut({ id: attRec._id }); }
-                        else { await checkInMut({ camperId: c._id, period: selectedClass.period, className: selectedClass.className, staffId: "Admin" }); }
-                      }}
-                        className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
-                          checked ? "bg-green-500 text-white" : "bg-slate-100 active:bg-slate-200"
-                        }`}>
-                        {checked && <Check size={18} strokeWidth={3} />}
-                      </button>
-                    </div>
-                  );
-                })}
-                {rosterCampers.length === 0 && <p className="text-center text-slate-400 py-6">No campers assigned to this class.</p>}
+      )}
+
+      {/* ── History Tab ── */}
+      {tab === "history" && (
+        <div className="space-y-2">
+          {(uploadHistory ?? []).length === 0 && <p className="text-center text-slate-400 py-8">No upload history yet.</p>}
+          {(uploadHistory ?? []).sort((a, b) => b.uploadedAt - a.uploadedAt).map(b => (
+            <div key={b._id} className="bg-white rounded-2xl border border-slate-200 px-4 py-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-slate-900">{b.filename ?? "Period Upload"}</span>
+                <span className="text-xs text-slate-400">{new Date(b.uploadedAt).toLocaleString()}</span>
               </div>
+              <p className="text-xs text-slate-500 mt-1">{b.rowsImported ?? 0} imported · {b.rowsSkipped ?? 0} skipped · {b.errors ?? 0} errors</p>
             </div>
-          ) : (
-            <div className="space-y-2">
-              {classes.length === 0 && <p className="text-center text-slate-400 py-8">No period schedules uploaded yet.</p>}
-              {classes.map(cl => {
-                const count = (allSchedules ?? []).filter(s => s.period === cl.period && s.className === cl.className).length;
-                return (
-                  <button key={`${cl.period}::${cl.className}`} onClick={() => setSelectedClass(cl)}
-                    className="w-full text-left bg-white border border-slate-200 rounded-2xl px-4 py-3 flex items-center gap-3 active:bg-slate-50">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0"
-                      style={{ backgroundColor: "#e0f2fe", color: "#023B64" }}>{count}</div>
-                    <div className="flex-1">
-                      <p className="font-semibold text-slate-900 text-sm">{cl.className}</p>
-                      <p className="text-xs text-slate-500">{PERIOD_LABEL[cl.period] ?? cl.period}</p>
-                    </div>
-                    <ChevronRight size={16} className="text-slate-300" />
-                  </button>
-                );
-              })}
+          ))}
+        </div>
+      )}
+
+      {/* ── Add/Edit Class Modal ── */}
+      {(addingClass || editingClass) && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <div className="absolute inset-0 bg-black/60" onClick={() => { setAddingClass(false); setEditingClass(null); }} />
+          <div className="relative bg-white rounded-t-3xl overflow-auto max-h-[85vh]">
+            <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 bg-slate-200 rounded-full" /></div>
+            <div className="px-5 pt-2 pb-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-bold text-slate-900">{editingClass ? "Edit Class" : "Add Class"}</h3>
+                {editingClass && (
+                  <div className="flex gap-2">
+                    <button onClick={async () => { try { await archivePeriodClass({ id: editingClass._id }); setEditingClass(null); } catch (e: unknown) { setClassError(e instanceof Error ? e.message : "Failed"); } }}
+                      className="text-xs text-amber-600 font-semibold px-3 py-1.5 rounded-lg active:bg-amber-50">Archive</button>
+                    <button onClick={async () => { try { await removePeriodClass({ id: editingClass._id }); setEditingClass(null); } catch (e: unknown) { setClassError(e instanceof Error ? e.message : "Failed"); } }}
+                      className="text-xs text-red-500 font-semibold px-3 py-1.5 rounded-lg active:bg-red-50">Delete</button>
+                  </div>
+                )}
+              </div>
+              {classError && <p className="text-sm text-red-500 font-medium">{classError}</p>}
+              <div>
+                <label className={lbl}>Period *</label>
+                <select value={classForm.period} onChange={e => setClassForm({ ...classForm, period: e.target.value })} className={`${inp} bg-white`} disabled={!!editingClass}>
+                  {[1,2,3,4,5,6,7].map(p => <option key={p} value={`Period${p}`}>Period {p}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className={lbl}>Class Name *</label>
+                <input value={classForm.className} onChange={e => setClassForm({ ...classForm, className: e.target.value })} className={inp} placeholder="e.g. Art" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className={lbl}>Location</label><input value={classForm.location} onChange={e => setClassForm({ ...classForm, location: e.target.value })} className={inp} placeholder="e.g. Room 3" /></div>
+                <div><label className={lbl}>Capacity</label><input value={classForm.capacity} onChange={e => setClassForm({ ...classForm, capacity: e.target.value.replace(/\D/g, "") })} className={`${inp} font-mono`} placeholder="e.g. 20" /></div>
+              </div>
+              <div><label className={lbl}>Notes</label><textarea value={classForm.notes} onChange={e => setClassForm({ ...classForm, notes: e.target.value })} className={`${inp} h-16 resize-none`} /></div>
+              <button onClick={async () => {
+                if (!classForm.className.trim()) { setClassError("Class name is required"); return; }
+                try {
+                  if (editingClass) { await updatePeriodClass({ id: editingClass._id, className: classForm.className.trim(), location: classForm.location.trim() || undefined, capacity: classForm.capacity ? parseInt(classForm.capacity) : undefined, notes: classForm.notes.trim() || undefined }); }
+                  else { await createPeriodClass({ period: classForm.period, className: classForm.className.trim(), location: classForm.location.trim() || undefined, capacity: classForm.capacity ? parseInt(classForm.capacity) : undefined, notes: classForm.notes.trim() || undefined }); }
+                  setAddingClass(false); setEditingClass(null); setClassError("");
+                } catch (e: unknown) { setClassError(e instanceof Error ? e.message : "Save failed"); }
+              }} className="w-full py-3 text-sm font-bold text-white rounded-xl" style={{ backgroundColor: "#023B64" }}>
+                {editingClass ? "Save Changes" : "Add Class"}
+              </button>
             </div>
-          )}
-        </>
+          </div>
+        </div>
       )}
     </div>
   );

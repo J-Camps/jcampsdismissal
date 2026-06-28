@@ -367,7 +367,47 @@ export default defineSchema({
     .index("by_bunk", ["bunk"])
     .index("by_period_class", ["period", "className"]),
 
-  // ── Period schedules (camper → period/class) ─────────────────────────────
+  // ── Period classes (definitions) ──────────────────────────────────────────
+  periodClasses: defineTable({
+    session: v.optional(v.string()),
+    period: v.string(),
+    className: v.string(),
+    normalizedClassName: v.optional(v.string()),
+    location: v.optional(v.string()),
+    assignedStaffIds: v.optional(v.array(v.string())),
+    isActive: v.optional(v.boolean()),
+    isArchived: v.optional(v.boolean()),
+    sortOrder: v.optional(v.number()),
+    capacity: v.optional(v.number()),
+    notes: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  })
+    .index("by_period", ["period"])
+    .index("by_period_class", ["period", "className"]),
+
+  // ── Period schedule records (camper → class with effective dates) ────────
+  periodScheduleRecords: defineTable({
+    camperId: v.id("campers"),
+    session: v.optional(v.string()),
+    period: v.string(),
+    periodClassId: v.id("periodClasses"),
+    classNameSnapshot: v.string(),
+    effectiveStartDate: v.optional(v.string()),
+    effectiveEndDate: v.optional(v.string()),
+    isActive: v.optional(v.boolean()),
+    source: v.optional(v.union(v.literal("upload"), v.literal("manual"))),
+    uploadBatchId: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+    createdByStaffId: v.optional(v.string()),
+    updatedByStaffId: v.optional(v.string()),
+  })
+    .index("by_camper", ["camperId"])
+    .index("by_class", ["periodClassId"])
+    .index("by_period", ["period"]),
+
+  // ── Legacy period schedules (kept for backward compat) ──────────────────
   periodSchedules: defineTable({
     camperId: v.id("campers"),
     period: v.string(),
@@ -396,12 +436,35 @@ export default defineSchema({
   periodAttendanceRecords: defineTable({
     camperId: v.id("campers"),
     date: v.string(),
+    session: v.optional(v.string()),
     period: v.string(),
-    className: v.string(),
+    periodClassId: v.optional(v.id("periodClasses")),
+    classNameSnapshot: v.optional(v.string()),
+    className: v.optional(v.string()),
     checkedIn: v.optional(v.boolean()),
     checkedInAt: v.optional(v.number()),
     checkedInByStaffId: v.optional(v.string()),
+    overrideReason: v.optional(v.string()),
+    updatedAt: v.optional(v.number()),
   })
     .index("by_camper_date", ["camperId", "date"])
-    .index("by_period_class_date", ["period", "className", "date"]),
+    .index("by_period_class_date", ["period", "className", "date"])
+    .index("by_class_date", ["periodClassId", "date"]),
+
+  // ── Upload batches (history) ────────────────────────────────────────────
+  uploadBatches: defineTable({
+    type: v.union(v.literal("period"), v.literal("lunch"), v.literal("camper"), v.literal("staff")),
+    uploadedByStaffId: v.optional(v.string()),
+    uploadedAt: v.number(),
+    session: v.optional(v.string()),
+    mode: v.optional(v.string()),
+    filename: v.optional(v.string()),
+    rowsImported: v.optional(v.number()),
+    rowsSkipped: v.optional(v.number()),
+    warnings: v.optional(v.number()),
+    errors: v.optional(v.number()),
+    canUndo: v.optional(v.boolean()),
+    undoneAt: v.optional(v.number()),
+  })
+    .index("by_type", ["type"]),
 });

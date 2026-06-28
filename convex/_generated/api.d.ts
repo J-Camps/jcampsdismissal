@@ -15,9 +15,12 @@ import type * as dailyOverrides from "../dailyOverrides.js";
 import type * as exceptions from "../exceptions.js";
 import type * as lunchRecords from "../lunchRecords.js";
 import type * as periodAttendance from "../periodAttendance.js";
+import type * as periodClasses from "../periodClasses.js";
+import type * as periodScheduleRecords from "../periodScheduleRecords.js";
 import type * as periodSchedules from "../periodSchedules.js";
 import type * as staff from "../staff.js";
 import type * as staffAssignments from "../staffAssignments.js";
+import type * as uploadBatches from "../uploadBatches.js";
 
 import type {
   ApiFromModules,
@@ -33,9 +36,12 @@ declare const fullApi: ApiFromModules<{
   exceptions: typeof exceptions;
   lunchRecords: typeof lunchRecords;
   periodAttendance: typeof periodAttendance;
+  periodClasses: typeof periodClasses;
+  periodScheduleRecords: typeof periodScheduleRecords;
   periodSchedules: typeof periodSchedules;
   staff: typeof staff;
   staffAssignments: typeof staffAssignments;
+  uploadBatches: typeof uploadBatches;
 }>;
 
 /**
