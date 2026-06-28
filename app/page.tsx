@@ -9,7 +9,7 @@ import {
   Check, ChevronRight, AlertCircle, Clock, MapPin,
   AlertTriangle, LogOut, ChevronDown, ChevronUp,
   X, Hash, BookOpen, Bus, ArrowRight, StickyNote,
-  CheckCircle2, ChevronLeft, Upload, Users,
+  CheckCircle2, ChevronLeft, Upload, Users, Building2, Calendar, UtensilsCrossed,
 } from "lucide-react";
 
 // ─── Brand colors (JCC Greater Boston) ───────────────────────────────────────
@@ -18,7 +18,7 @@ import {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const RUNNERS_FALLBACK = ["Runner 1", "Runner 2", "Runner 3", "Runner 4"];
-const BUS_ROUTES = ["Bus 1", "Bus 2", "Bus 3", "Bus 4", "Bus 5", "Bus 6"];
+const BUS_ROUTES_FALLBACK = ["Bus 1", "Bus 2", "Bus 3", "Bus 4", "Bus 5", "Bus 6"];
 const STATUSES = ["Waiting", "Called", "Assigned", "Picked Up", "Dismissed"] as const;
 
 const STATUS_STYLE: Record<string, string> = {
@@ -294,7 +294,7 @@ function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => vo
   );
 }
 
-type AdminSection = "campers" | "transport" | "extday" | "bunk" | "admin" | "staff" | "upload";
+type AdminSection = "campers" | "transport" | "extday" | "bunk" | "admin" | "staff" | "upload" | "structure" | "periods" | "lunch";
 type TransportSub = "carline" | "walkup" | "dispatcher" | "runner" | "bus";
 type ExtDaySub    = "beforecare" | "aftercare";
 
@@ -309,7 +309,10 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
     { id: "extday",    label: "Ext. Day",   icon: <Clock size={18} /> },
     { id: "bunk",      label: "Bunk",       icon: <BookOpen size={18} /> },
     { id: "admin",     label: "Admin",      icon: <Settings size={18} /> },
+    { id: "structure", label: "Structure",  icon: <Building2 size={18} /> },
     { id: "staff",     label: "Staff",      icon: <User size={18} /> },
+    { id: "periods",   label: "Periods",    icon: <Calendar size={18} /> },
+    { id: "lunch",     label: "Lunch",      icon: <UtensilsCrossed size={18} /> },
     { id: "upload",    label: "Upload",     icon: <Upload size={18} /> },
   ];
 
@@ -397,7 +400,10 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
         {section === "campers"  && <CamperDashboard staff={staff} />}
         {section === "bunk"     && <AdminBunkView staff={staff} />}
         {section === "admin"    && <Admin />}
+        {section === "structure" && <CampStructureManagement />}
         {section === "staff"    && <StaffManagement />}
+        {section === "periods"  && <PeriodManagement />}
+        {section === "lunch"    && <LunchManagement />}
         {section === "upload"   && <CamperUpload />}
       </main>
     </div>
@@ -608,6 +614,7 @@ function countsFor(rows: CamperRow[]) {
 
 function CamperDashboard({ staff }: { staff: StaffDoc }) {
   const campers = useQuery(api.campers.list);
+  const campStructure = useQuery(api.campStructure.list);
 
   const [search,         setSearch]         = useState("");
   const [statusFilter,   setStatusFilter]   = useState<"all" | "Here" | "NotHere">("all");
@@ -650,6 +657,18 @@ function CamperDashboard({ staff }: { staff: StaffDoc }) {
     if (!subMap.has(subKey)) subMap.set(subKey, []);
     subMap.get(subKey)!.push(r);
   }
+  if (campStructure && campStructure.length > 0 && !q && statusFilter === "all") {
+    for (const s of campStructure) {
+      if (s.isActive === false) continue;
+      const top = groupBy === "camp" ? s.camp : groupBy === "bunk" ? s.bunk : "No Grade";
+      const sub = groupBy === "camp" ? s.bunk : "";
+      if (!hierarchy.has(top)) hierarchy.set(top, new Map());
+      const subMap = hierarchy.get(top)!;
+      const subKey = hasSubLevel ? sub : "";
+      if (!subMap.has(subKey)) subMap.set(subKey, []);
+    }
+  }
+
   const topKeys = [...hierarchy.keys()].sort((a, b) => a.localeCompare(b));
 
   const toggleStatus = (s: "Here" | "NotHere") =>
@@ -2035,93 +2054,210 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
 
 // ─── Bus Attendance Sheets ────────────────────────────────────────────────────
 
+const BUS_CHECKPOINTS = [
+  { key: "MorningBusIn",        label: "Bus",  phase: "AM" },
+  { key: "MorningBusRoom",      label: "JCC",  phase: "AM" },
+  { key: "AfternoonBusRoomIn",  label: "Room", phase: "PM" },
+  { key: "AfternoonBusOnBoard", label: "Bus",  phase: "PM" },
+  { key: "AfternoonBusAtStop",  label: "Stop", phase: "PM" },
+] as const;
+
+const BUS_COLORS: Record<string, { bg: string; text: string; light: string; border: string }> = {
+  "Blue Bus":   { bg: "#2563eb", text: "#fff",    light: "#dbeafe", border: "#93c5fd" },
+  "Red Bus":    { bg: "#dc2626", text: "#fff",    light: "#fee2e2", border: "#fca5a5" },
+  "Green Bus":  { bg: "#16a34a", text: "#fff",    light: "#dcfce7", border: "#86efac" },
+  "Yellow Bus": { bg: "#ca8a04", text: "#fff",    light: "#fef9c3", border: "#fde047" },
+  "Orange Bus": { bg: "#ea580c", text: "#fff",    light: "#ffedd5", border: "#fdba74" },
+  "Purple Bus": { bg: "#7c3aed", text: "#fff",    light: "#ede9fe", border: "#c4b5fd" },
+};
+const getBusColor = (route: string) => BUS_COLORS[route] ?? { bg: "#023B64", text: "#fff", light: "#e0f2fe", border: "#93c5fd" };
+
+function busCpCount(campers: CamperDoc[], key: string) {
+  return campers.filter(c => c.dailyCheckpoints?.[key]).length;
+}
+
 function BusView({ staff }: { staff: StaffDoc }) {
-  const [route, setRoute] = useState(staff.groupAssignment ?? BUS_ROUTES[0]);
-  const roster     = useQuery(api.campers.getBusRoster, { route });
+  const busRoutes  = useQuery(api.campers.getBusRoutes);
   const allCampers = useQuery(api.campers.list);
   const overrides  = useQuery(api.dailyOverrides.getForDate, {});
+  const setCheckpoint = useMutation(api.campers.setCheckpoint);
+  const routes     = busRoutes && busRoutes.length > 0 ? busRoutes : BUS_ROUTES_FALLBACK;
+  const [view, setView] = useState<"all" | string>("all");
+  const [selected, setSelected] = useState<CamperDoc | null>(null);
+  const [search, setSearch] = useState("");
+  const [groupByStop, setGroupByStop] = useState(false);
+  const [expandedRoutes, setExpandedRoutes] = useState<Set<string>>(new Set());
+
+  if (allCampers === undefined) return <Loading />;
 
   const overrideMap = new Map<string, NonNullable<typeof overrides>[number]>();
   for (const o of overrides ?? []) overrideMap.set(o.camperId, o);
 
-  const normalIds = new Set((roster ?? []).map(c => c._id));
+  const getBusRoster = (route: string) => {
+    const base = allCampers.filter(c => c.arrivalMethod === route || c.dismissalMethod === route || c.busRoute === route);
+    const baseIds = new Set(base.map(c => c._id));
+    const added = allCampers.filter(c => {
+      if (baseIds.has(c._id)) return false;
+      const ov = overrideMap.get(c._id);
+      return ov?.morningArrival === route || ov?.afternoonDismissal === route;
+    });
+    const removed = base.filter(c => {
+      const ov = overrideMap.get(c._id);
+      if (!ov) return false;
+      const arrStays = (c.arrivalMethod === route && !ov.morningArrival) || ov.morningArrival === route;
+      const disStays = (c.dismissalMethod === route && !ov.afternoonDismissal) || ov.afternoonDismissal === route;
+      return !arrStays && !disStays;
+    });
+    const removedIds = new Set(removed.map(c => c._id));
+    return [...base.filter(c => !removedIds.has(c._id)), ...added];
+  };
 
-  // Campers overridden INTO this bus today
-  const addedToday = (allCampers ?? []).filter(c => {
-    if (normalIds.has(c._id)) return false;
-    const ov = overrideMap.get(c._id);
-    return ov?.morningArrival === route || ov?.afternoonDismissal === route;
-  });
+  const allBusCampers = routes.flatMap(r => getBusRoster(r));
+  const uniqueBusIds = new Set<string>();
+  const dedupedAll = allBusCampers.filter(c => { if (uniqueBusIds.has(c._id)) return false; uniqueBusIds.add(c._id); return true; });
 
-  // Campers overridden OUT of this bus today
-  const removedToday = (roster ?? []).filter(c => {
-    const ov = overrideMap.get(c._id);
-    if (!ov) return false;
-    const arrivalStays = (c.arrivalMethod === route && !ov.morningArrival) || ov.morningArrival === route;
-    const dismissalStays = (c.dismissalMethod === route && !ov.afternoonDismissal) || ov.afternoonDismissal === route;
-    return !arrivalStays && !dismissalStays;
-  });
+  const isAbsent = (c: CamperDoc) => overrideMap.get(c._id)?.isAbsent === true || c.arrivalStatus === "Absent";
+  const allDoneFn = (c: CamperDoc) => BUS_CHECKPOINTS.every(cp => c.dailyCheckpoints?.[cp.key]);
+  const toggleCp = (c: CamperDoc, key: string) => {
+    if (isAbsent(c)) return;
+    setCheckpoint({ id: c._id, checkpoint: key as "MorningBusIn", value: !c.dailyCheckpoints?.[key], staffName: staff.name, label: view === "all" ? "" : view });
+  };
+  const toggleRoute = (r: string) => { const s = new Set(expandedRoutes); if (s.has(r)) s.delete(r); else s.add(r); setExpandedRoutes(s); };
 
-  const removedIds = new Set(removedToday.map(c => c._id));
-  const activeRoster = (roster ?? []).filter(c => !removedIds.has(c._id));
-  const todayRoster = [...activeRoster, ...addedToday];
-
-  return (
-    <div className="space-y-4">
-      <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{route}</h2>
-
-      <div className="flex gap-1.5 overflow-x-auto pb-1">
-        {BUS_ROUTES.map(r => (
-          <button key={r} onClick={() => setRoute(r)}
-            className="px-3.5 py-2 rounded-xl text-sm font-semibold transition-colors flex-shrink-0"
-            style={route === r ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b", backgroundColor: "#fff", border: "1px solid #e2e8f0" }}>
-            {r}
-          </button>
-        ))}
-      </div>
-
-      {removedToday.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-xs font-bold text-amber-600 uppercase tracking-wider px-1">Removed from {route} Today</p>
-          {removedToday.map(c => {
-            const ov = overrideMap.get(c._id);
-            const newMethod = ov?.morningArrival || ov?.afternoonDismissal || "?";
-            return (
-              <div key={c._id} className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex items-center gap-3 opacity-70">
-                <span className="font-semibold text-slate-700 text-sm">{camperName(c)}</span>
-                <span className="text-xs text-amber-700">→ now {newMethod}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {addedToday.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-xs font-bold text-green-600 uppercase tracking-wider px-1">Added to {route} Today</p>
-          {addedToday.map(c => (
-            <div key={c._id} className="bg-green-50 border border-green-200 rounded-2xl px-4 py-3 flex items-center gap-3">
-              <span className="font-semibold text-slate-700 text-sm">{camperName(c)}</span>
-              <span className="text-xs text-green-700">normally {c.arrivalMethod === route ? c.arrivalMethod : c.dismissalMethod ?? "—"}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {roster === undefined ? <Loading /> : (
-        <InOutRosterView
-          campers={todayRoster}
-          checkpoint="Bus"
-          staffName={staff.name}
-          inLabel="Boarded"
-          outLabel="Dropped Off"
-          groupLabel={route}
-          emptyMessage={`No campers assigned to ${route} today.`}
-          overrides={overrides ?? []}
-        />
-      )}
+  const renderCounters = (clist: CamperDoc[]) => (
+    <div className="grid grid-cols-5 gap-1">
+      {BUS_CHECKPOINTS.map(cp => {
+        const done = busCpCount(clist, cp.key);
+        return (
+          <div key={cp.key} className="bg-white border border-slate-200 rounded-xl px-1 py-2 text-center">
+            <p className="text-sm font-bold text-slate-900">{done}<span className="text-slate-400 font-normal">/{clist.length}</span></p>
+            <p className="text-[9px] text-slate-400 uppercase">{cp.phase} {cp.label}</p>
+          </div>
+        );
+      })}
     </div>
   );
+
+  const renderCamperRow = (c: CamperDoc) => {
+    const absent = isAbsent(c);
+    const done = allDoneFn(c);
+    const sq = search.toLowerCase();
+    if (sq && !camperName(c).toLowerCase().includes(sq) && !c.bunk.toLowerCase().includes(sq) && !(c.busStop ?? "").toLowerCase().includes(sq) && !c.code.includes(sq)) return null;
+    return (
+      <div key={c._id} className={`bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden ${absent ? "opacity-50" : done ? "opacity-55" : ""}`}>
+        <button onClick={() => setSelected(c)} className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-slate-50">
+          <div className="w-11 h-11 rounded-full flex items-center justify-center font-bold text-lg text-white flex-shrink-0 overflow-hidden" style={{ backgroundColor: avatarBg(c.name) }}>
+            {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0).toUpperCase()}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-slate-900 text-base leading-tight">{camperName(c)}</p>
+            <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+              <span className="text-xs text-slate-500">{c.bunk}</span>
+              <span className="text-xs text-slate-400 font-mono">#{c.code}</span>
+              {c.busStop && <span className="text-[10px] font-semibold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded-full">{c.busStop}</span>}
+              {c.walkPermission && <span className="text-[10px] font-bold text-green-700 bg-green-100 px-1.5 py-0.5 rounded-full">Walk</span>}
+              {c.hasAllergies && <span className="text-[10px] font-bold text-red-700 bg-red-100 px-1.5 py-0.5 rounded-full">ALLERGY</span>}
+              {absent && <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Absent</span>}
+            </div>
+          </div>
+        </button>
+        <div className="border-t border-slate-100 px-4 py-3">
+          <div className="flex items-center gap-4">
+            <div className="flex-1">
+              <p className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color: "#023B64" }}>Morning</p>
+              <div className="flex gap-2">
+                {BUS_CHECKPOINTS.filter(cp => cp.phase === "AM").map(cp => { const checked = !!c.dailyCheckpoints?.[cp.key]; return (
+                  <button key={cp.key} onClick={() => toggleCp(c, cp.key)} disabled={absent} className={`flex flex-col items-center gap-1 ${absent ? "cursor-not-allowed" : ""}`}>
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${absent ? "bg-slate-50" : checked ? "bg-green-500 text-white" : "bg-slate-100 active:bg-slate-200"}`}>{checked && <Check size={18} strokeWidth={3} />}</div>
+                    <span className={`text-[11px] font-semibold ${checked ? "text-green-600" : "text-slate-400"}`}>{cp.label}</span>
+                  </button>); })}
+              </div>
+            </div>
+            <div className="w-px h-12 bg-slate-200" />
+            <div className="flex-1">
+              <p className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color: "#023B64" }}>Afternoon</p>
+              <div className="flex gap-2">
+                {BUS_CHECKPOINTS.filter(cp => cp.phase === "PM").map(cp => { const checked = !!c.dailyCheckpoints?.[cp.key]; return (
+                  <button key={cp.key} onClick={() => toggleCp(c, cp.key)} disabled={absent} className={`flex flex-col items-center gap-1 ${absent ? "cursor-not-allowed" : ""}`}>
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${absent ? "bg-slate-50" : checked ? "bg-green-500 text-white" : "bg-slate-100 active:bg-slate-200"}`}>{checked && <Check size={18} strokeWidth={3} />}</div>
+                    <span className={`text-[11px] font-semibold ${checked ? "text-green-600" : "text-slate-400"}`}>{cp.label}</span>
+                  </button>); })}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ── All Buses Dashboard ──
+  if (view === "all") return (
+    <>
+      <div className="space-y-4">
+        <div className="flex items-center gap-2"><Bus size={22} className="text-slate-700" /><h2 className="text-xl font-bold text-slate-900">All Buses</h2><span className="text-sm text-slate-400 ml-1">{dedupedAll.length} campers</span></div>
+        {renderCounters(dedupedAll)}
+        <div className="relative"><Search size={15} className="absolute left-3 top-3 text-slate-400" /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, bunk, code, bus stop…" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm bg-white focus:outline-none" /></div>
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          <button className="px-3.5 py-2 rounded-xl text-sm font-semibold flex-shrink-0 text-white" style={{ backgroundColor: "#023B64" }}>All</button>
+          {routes.map(r => { const bc = getBusColor(r); return <button key={r} onClick={() => setView(r)} className="px-3.5 py-2 rounded-xl text-sm font-semibold transition-colors flex-shrink-0" style={{ color: bc.bg, backgroundColor: bc.light, border: `1px solid ${bc.border}` }}>{r}</button>; })}
+        </div>
+        {routes.map(r => {
+          const rr = getBusRoster(r).sort((a, b) => camperName(a).localeCompare(camperName(b)));
+          const expanded = expandedRoutes.has(r);
+          const cpDone = BUS_CHECKPOINTS.map(cp => busCpCount(rr, cp.key));
+          const bc = getBusColor(r);
+          return (
+            <div key={r} className="rounded-2xl shadow-sm overflow-hidden" style={{ backgroundColor: bc.light, border: `1.5px solid ${bc.border}` }}>
+              <button onClick={() => toggleRoute(r)} className="w-full flex items-center gap-3 px-4 py-3 text-left active:opacity-80">
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0" style={{ backgroundColor: bc.bg, color: bc.text }}>{rr.length}</div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-slate-900">{r}</p>
+                  <div className="flex gap-2 mt-1 text-[10px] text-slate-400">{BUS_CHECKPOINTS.map((cp, i) => <span key={cp.key} className={cpDone[i] === rr.length && rr.length > 0 ? "text-green-600 font-bold" : ""}>{cp.phase[0]}{cp.label[0]}: {cpDone[i]}/{rr.length}</span>)}</div>
+                </div>
+                {expanded ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
+              </button>
+              {expanded && <div className="border-t border-slate-100 px-3 py-3 space-y-2">{renderCounters(rr)}<div className="space-y-2.5 mt-3">{rr.map(c => renderCamperRow(c)).filter(Boolean)}</div><button onClick={() => setView(r)} className="w-full py-2 text-xs font-semibold text-slate-500">Open full {r} sheet →</button></div>}
+            </div>
+          );
+        })}
+      </div>
+      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} />}
+    </>
+  );
+
+  // ── Single Bus Sheet ──
+  const singleRoster = getBusRoster(view).sort((a, b) => { if (groupByStop) { const sa = (a.busStop ?? "").localeCompare(b.busStop ?? ""); if (sa !== 0) return sa; } return camperName(a).localeCompare(camperName(b)); });
+  const stopGroups = groupByStop ? [...singleRoster.reduce((acc, c) => { const stop = c.busStop || "No Stop Assigned"; if (!acc.has(stop)) acc.set(stop, []); acc.get(stop)!.push(c); return acc; }, new Map<string, CamperDoc[]>()).entries()].sort((a, b) => a[0].localeCompare(b[0])) : null;
+
+  return (
+    <>
+      <div className="space-y-4">
+        <button onClick={() => setView("all")} className="text-sm text-slate-500 flex items-center gap-1">← All Buses</button>
+        <h2 className="text-2xl font-bold" style={{ color: getBusColor(view).bg }}>{view}</h2>
+        {renderCounters(singleRoster)}
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          <button onClick={() => setView("all")} className="px-3.5 py-2 rounded-xl text-sm font-semibold flex-shrink-0" style={{ color: "#64748b", backgroundColor: "#fff", border: "1px solid #e2e8f0" }}>All</button>
+          {routes.map(r => { const bc = getBusColor(r); return <button key={r} onClick={() => setView(r)} className="px-3.5 py-2 rounded-xl text-sm font-semibold transition-colors flex-shrink-0" style={view === r ? { backgroundColor: bc.bg, color: bc.text } : { color: bc.bg, backgroundColor: bc.light, border: `1px solid ${bc.border}` }}>{r}</button>; })}
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1"><Search size={15} className="absolute left-3 top-3 text-slate-400" /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, bunk, code, stop…" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm bg-white focus:outline-none" /></div>
+          <button onClick={() => setGroupByStop(!groupByStop)} className={`text-xs font-semibold px-3 py-2.5 rounded-xl transition-colors whitespace-nowrap ${groupByStop ? "text-white" : "bg-white text-slate-500 border border-slate-200"}`} style={groupByStop ? { backgroundColor: "#023B64" } : undefined}>By Stop</button>
+        </div>
+        <p className="text-xs text-slate-500 text-center">{singleRoster.length} campers on {view}</p>
+        {singleRoster.length === 0 && <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-slate-500">No campers on {view}.</div>}
+        {stopGroups ? stopGroups.map(([stop, members]) => {
+          const bc = getBusColor(view);
+          return (
+          <div key={stop}>
+            <div className="flex items-center gap-2 mb-2 px-3 py-2 rounded-xl" style={{ backgroundColor: bc.light, border: `1px solid ${bc.border}` }}><MapPin size={14} style={{ color: bc.bg }} /><span className="text-sm font-bold" style={{ color: bc.bg }}>{stop}</span><span className="text-xs" style={{ color: bc.bg, opacity: 0.6 }}>{members.length}</span></div>
+            <div className="space-y-2.5">{members.map(c => renderCamperRow(c)).filter(Boolean)}</div>
+          </div>
+        ); }) : <div className="space-y-2.5">{singleRoster.map(c => renderCamperRow(c)).filter(Boolean)}</div>}
+      </div>
+      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} />}
+    </>
+  );
+
 }
 
 // ─── Specialist View (Upper Camp activity rosters) ───────────────────────────
@@ -2677,31 +2813,81 @@ function RunnerAdminView() {
 
 // ─── Admin ────────────────────────────────────────────────────────────────────
 
-type AdminTab = "campers" | "changes";
+type AdminTab = "campers" | "manage" | "changes";
+
+type CamperFormData = {
+  preferredName: string; lastName: string; bunk: string; code: string;
+  camp: string; campDivision: string; grade: string;
+  arrivalMethod: string; dismissalMethod: string; photoUrl: string;
+  allergyDetails: string; camperNotes: string; lunchInfo: string;
+};
+
+const CAMPER_FORM_BLANK: CamperFormData = {
+  preferredName: "", lastName: "", bunk: "", code: "", camp: "", campDivision: "",
+  grade: "", arrivalMethod: "", dismissalMethod: "", photoUrl: "",
+  allergyDetails: "", camperNotes: "", lunchInfo: "",
+};
+
+function camperFormFromDoc(c: CamperDoc): CamperFormData {
+  return {
+    preferredName: c.preferredName ?? c.name ?? "",
+    lastName: c.lastName ?? "",
+    bunk: c.bunk ?? "",
+    code: c.code ?? "",
+    camp: c.camp ?? "",
+    campDivision: c.campDivision ?? "",
+    grade: c.grade ?? "",
+    arrivalMethod: c.arrivalMethod ?? "",
+    dismissalMethod: c.dismissalMethod ?? "",
+    photoUrl: c.photoUrl ?? "",
+    allergyDetails: c.allergyDetails ?? "",
+    camperNotes: c.camperNotes ?? "",
+    lunchInfo: c.lunchInfo ?? "",
+  };
+}
 
 function Admin() {
   const [tab, setTab] = useState<AdminTab>("campers");
   const [q, setQ]       = useState("");
   const [selected, setSelected] = useState<CamperDoc | null>(null);
+  const [showInactive, setShowInactive] = useState(false);
+  const [editingCamper, setEditingCamper] = useState<CamperDoc | null>(null);
+  const [addingCamper, setAddingCamper] = useState(false);
+  const [camperForm, setCamperForm] = useState<CamperFormData>(CAMPER_FORM_BLANK);
+  const [camperError, setCamperError] = useState("");
   const campers         = useQuery(api.campers.list);
+  const campStructure   = useQuery(api.campStructure.list);
   const todayOverrides  = useQuery(api.dailyOverrides.getForDate, {});
   const upcomingOverrides = useQuery(api.dailyOverrides.getUpcoming, { fromDate: today() });
   const clearDailyState = useMutation(api.campers.clearDailyState);
-  const clearForDate    = useMutation(api.dailyOverrides.clearForDate);
+  const adminCreateCamper = useMutation(api.campers.adminCreate);
+  const adminUpdateCamper = useMutation(api.campers.adminUpdate);
+  const deactivateCamper = useMutation(api.campers.deactivate);
+  const reactivateCamper = useMutation(api.campers.reactivate);
+  const deleteCamper = useMutation(api.campers.adminDelete);
 
   const totalChanges = ((todayOverrides ?? []).length) + ((upcomingOverrides ?? []).filter(o => o.date > today()).length);
   const adminTabs: { id: AdminTab; label: string }[] = [
     { id: "campers", label: "Campers" },
+    { id: "manage", label: "Manage" },
     { id: "changes", label: "Changes" },
   ];
 
   if (campers === undefined) return <Loading />;
 
-  // Build camper lookup for override views
   const camperMap = new Map<string, CamperDoc>();
   for (const c of campers) camperMap.set(c._id, c);
 
+  const activeCampers = campers.filter(c => c.isActive !== false);
+  const inactiveCampers = campers.filter(c => c.isActive === false);
+
   const filtered = campers.filter(c => {
+    if (tab === "manage") {
+      if (!showInactive && c.isActive === false) return false;
+      if (showInactive && c.isActive !== false) return false;
+    } else {
+      if (c.isActive === false) return false;
+    }
     const s = q.toLowerCase();
     if (!s) return true;
     return c.name.toLowerCase().includes(s)
@@ -2710,8 +2896,66 @@ function Admin() {
       || c.bunk.toLowerCase().includes(s)
       || c.code.includes(s)
       || (c.arrivalMethod ?? "").toLowerCase().includes(s)
-      || (c.dismissalMethod ?? "").toLowerCase().includes(s);
+      || (c.dismissalMethod ?? "").toLowerCase().includes(s)
+      || (c.camp ?? "").toLowerCase().includes(s);
   });
+
+  const structureBunks = (campStructure ?? []).filter(s => s.isActive !== false).map(s => s.bunk).sort();
+  const structureCamps = [...new Set((campStructure ?? []).filter(s => s.isActive !== false).map(s => s.camp))].sort();
+  const structureDivisions = [...new Set((campStructure ?? []).filter(s => s.isActive !== false).map(s => s.division))].sort();
+
+  const openAddCamper = () => { setCamperForm(CAMPER_FORM_BLANK); setAddingCamper(true); setEditingCamper(null); setCamperError(""); };
+  const openEditCamper = (c: CamperDoc) => { setCamperForm(camperFormFromDoc(c)); setEditingCamper(c); setAddingCamper(false); setCamperError(""); };
+
+  const handleSaveCamper = async () => {
+    if (!camperForm.preferredName.trim() || !camperForm.bunk.trim() || !camperForm.code.trim()) {
+      setCamperError("Name, bunk, and safety code are required"); return;
+    }
+    try {
+      if (editingCamper) {
+        await adminUpdateCamper({
+          id: editingCamper._id, staffName: "Admin",
+          preferredName: camperForm.preferredName.trim(),
+          lastName: camperForm.lastName.trim() || undefined,
+          bunk: camperForm.bunk.trim(),
+          code: camperForm.code.trim(),
+          camp: camperForm.camp.trim() || undefined,
+          campDivision: camperForm.campDivision.trim() || undefined,
+          grade: camperForm.grade.trim() || undefined,
+          arrivalMethod: camperForm.arrivalMethod.trim() || undefined,
+          dismissalMethod: camperForm.dismissalMethod.trim() || undefined,
+          photoUrl: camperForm.photoUrl.trim() || undefined,
+          allergyDetails: camperForm.allergyDetails.trim() || undefined,
+          camperNotes: camperForm.camperNotes.trim() || undefined,
+          lunchInfo: camperForm.lunchInfo.trim() || undefined,
+        });
+      } else {
+        await adminCreateCamper({
+          preferredName: camperForm.preferredName.trim(),
+          lastName: camperForm.lastName.trim() || undefined,
+          bunk: camperForm.bunk.trim(),
+          code: camperForm.code.trim(),
+          camp: camperForm.camp.trim() || undefined,
+          campDivision: camperForm.campDivision.trim() || undefined,
+          grade: camperForm.grade.trim() || undefined,
+          arrivalMethod: camperForm.arrivalMethod.trim() || undefined,
+          dismissalMethod: camperForm.dismissalMethod.trim() || undefined,
+          photoUrl: camperForm.photoUrl.trim() || undefined,
+          allergyDetails: camperForm.allergyDetails.trim() || undefined,
+          camperNotes: camperForm.camperNotes.trim() || undefined,
+          lunchInfo: camperForm.lunchInfo.trim() || undefined,
+          staffName: "Admin",
+        });
+      }
+      setEditingCamper(null); setAddingCamper(false); setCamperError("");
+    } catch (e: unknown) {
+      setCamperError(e instanceof Error ? e.message : "Save failed");
+    }
+  };
+
+  const showCamperForm = addingCamper || editingCamper;
+  const inp = "w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none";
+  const lbl = "text-xs font-semibold text-slate-500 mb-1 block";
 
   return (
     <>
@@ -2729,7 +2973,6 @@ function Admin() {
           </button>
         </div>
 
-        {/* Sub-tabs */}
         <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5">
           {adminTabs.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
@@ -2755,7 +2998,7 @@ function Admin() {
                 onBlur={e => (e.currentTarget.style.borderColor = "")} />
             </div>
 
-            <p className="text-xs text-slate-400">{filtered.length} of {campers.length} campers</p>
+            <p className="text-xs text-slate-400">{filtered.length} of {activeCampers.length} campers</p>
 
             <div className="space-y-2">
               {filtered.map(c => {
@@ -2783,7 +3026,80 @@ function Admin() {
           </>
         )}
 
-        {/* ── Changes Tab (today + upcoming combined) ── */}
+        {/* ── Manage Tab ── */}
+        {tab === "manage" && (
+          <>
+            <div className="flex items-center gap-2">
+              <button onClick={openAddCamper}
+                className="flex items-center gap-1.5 text-sm font-semibold text-white px-3 py-2 rounded-xl active:opacity-80"
+                style={{ backgroundColor: "#023B64" }}>
+                + Add Camper
+              </button>
+              <button onClick={() => setShowInactive(!showInactive)}
+                className={`text-xs font-semibold px-3 py-2 rounded-xl transition-colors ${showInactive ? "bg-amber-100 text-amber-700" : "bg-white text-slate-500 border border-slate-200"}`}>
+                {showInactive ? `Inactive (${inactiveCampers.length})` : `Show Inactive (${inactiveCampers.length})`}
+              </button>
+            </div>
+
+            <div className="relative">
+              <Search size={17} className="absolute left-3.5 top-3.5 text-slate-400" />
+              <input value={q} onChange={e => setQ(e.target.value)}
+                placeholder="Search name, group, code, camp…"
+                className="w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl focus:outline-none text-sm bg-white"
+                onFocus={e => (e.currentTarget.style.borderColor = "#023B64")}
+                onBlur={e => (e.currentTarget.style.borderColor = "")} />
+            </div>
+
+            <p className="text-xs text-slate-400">{filtered.length} {showInactive ? "inactive" : "active"} campers</p>
+
+            <div className="space-y-2">
+              {filtered.map(c => {
+                const name = c.preferredName ? `${c.preferredName}${c.lastName ? " " + c.lastName : ""}` : c.name;
+                const inactive = c.isActive === false;
+                return (
+                  <div key={c._id} className={`bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden ${inactive ? "opacity-60" : ""}`}>
+                    <div className="flex items-center gap-3 px-4 py-3">
+                      <div className="w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center text-white font-bold text-sm overflow-hidden"
+                        style={{ backgroundColor: inactive ? "#94a3b8" : avatarBg(c.name) }}>
+                        {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-semibold text-slate-900 text-sm">{name}</span>
+                          {inactive && <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">Inactive</span>}
+                          {c.hasAllergies && <span className="text-[10px] font-bold text-red-700 bg-red-100 px-1.5 py-0.5 rounded-full">ALLERGY</span>}
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5">{c.bunk} · #{c.code}{c.camp ? ` · ${c.camp}` : ""}</p>
+                      </div>
+                      <div className="flex gap-1.5 flex-shrink-0">
+                        <button onClick={() => openEditCamper(c)}
+                          className="text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-slate-100 text-slate-600 active:bg-slate-200">
+                          Edit
+                        </button>
+                        {inactive ? (
+                          <button onClick={() => reactivateCamper({ id: c._id, staffName: "Admin" })}
+                            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-green-100 text-green-700 active:bg-green-200">
+                            Reactivate
+                          </button>
+                        ) : (
+                          <button onClick={() => {
+                            if (confirm(`Deactivate ${name}? They will be hidden from active views but records are preserved.`))
+                              deactivateCamper({ id: c._id, staffName: "Admin" });
+                          }}
+                            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-red-50 text-red-500 active:bg-red-100">
+                            Deactivate
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+
+        {/* ── Changes Tab ── */}
         {tab === "changes" && (
           <AdminTodayChanges
             overrides={todayOverrides ?? []}
@@ -2796,6 +3112,128 @@ function Admin() {
       </div>
 
       {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} staffName="Admin" isAdmin />}
+
+      {/* Add / Edit Camper modal */}
+      {showCamperForm && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <div className="absolute inset-0 bg-black/60" onClick={() => { setAddingCamper(false); setEditingCamper(null); }} />
+          <div className="relative bg-white rounded-t-3xl overflow-auto max-h-[85vh]">
+            <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 bg-slate-200 rounded-full" /></div>
+            <div className="px-5 pt-2 pb-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-bold text-slate-900">{editingCamper ? "Edit Camper" : "Add Camper"}</h3>
+                {editingCamper && (
+                  <button onClick={async () => {
+                    try {
+                      await deleteCamper({ id: editingCamper._id, staffName: "Admin" });
+                      setEditingCamper(null);
+                    } catch (e: unknown) {
+                      setCamperError(e instanceof Error ? e.message : "Delete failed");
+                    }
+                  }}
+                    className="text-xs text-red-500 font-semibold px-3 py-1.5 rounded-lg active:bg-red-50">
+                    Delete
+                  </button>
+                )}
+              </div>
+
+              {camperError && <p className="text-sm text-red-500 font-medium">{camperError}</p>}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>First Name *</label>
+                  <input value={camperForm.preferredName} onChange={e => setCamperForm({ ...camperForm, preferredName: e.target.value })}
+                    className={inp} placeholder="First name" />
+                </div>
+                <div>
+                  <label className={lbl}>Last Name</label>
+                  <input value={camperForm.lastName} onChange={e => setCamperForm({ ...camperForm, lastName: e.target.value })}
+                    className={inp} placeholder="Last name" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Bunk *</label>
+                  <input value={camperForm.bunk} onChange={e => setCamperForm({ ...camperForm, bunk: e.target.value })}
+                    className={inp} placeholder="e.g. Red" list="camper-bunk-list" />
+                  <datalist id="camper-bunk-list">{structureBunks.map(b => <option key={b} value={b} />)}</datalist>
+                </div>
+                <div>
+                  <label className={lbl}>Safety Code *</label>
+                  <input value={camperForm.code} onChange={e => setCamperForm({ ...camperForm, code: e.target.value })}
+                    className={`${inp} font-mono`} placeholder="e.g. 123" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Camp</label>
+                  <input value={camperForm.camp} onChange={e => setCamperForm({ ...camperForm, camp: e.target.value })}
+                    className={inp} placeholder="e.g. Kaleidoscope" list="camper-camp-list" />
+                  <datalist id="camper-camp-list">{structureCamps.map(c => <option key={c} value={c} />)}</datalist>
+                </div>
+                <div>
+                  <label className={lbl}>Division</label>
+                  <input value={camperForm.campDivision} onChange={e => setCamperForm({ ...camperForm, campDivision: e.target.value })}
+                    className={inp} placeholder="e.g. Lower" list="camper-div-list" />
+                  <datalist id="camper-div-list">{structureDivisions.map(d => <option key={d} value={d} />)}</datalist>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Grade</label>
+                  <input value={camperForm.grade} onChange={e => setCamperForm({ ...camperForm, grade: e.target.value })}
+                    className={inp} placeholder="e.g. 3rd" />
+                </div>
+                <div>
+                  <label className={lbl}>Lunch Info</label>
+                  <input value={camperForm.lunchInfo} onChange={e => setCamperForm({ ...camperForm, lunchInfo: e.target.value })}
+                    className={inp} placeholder="Blank = buys lunch" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Arrival Method</label>
+                  <input value={camperForm.arrivalMethod} onChange={e => setCamperForm({ ...camperForm, arrivalMethod: e.target.value })}
+                    className={inp} placeholder="e.g. Carline" />
+                </div>
+                <div>
+                  <label className={lbl}>Dismissal Method</label>
+                  <input value={camperForm.dismissalMethod} onChange={e => setCamperForm({ ...camperForm, dismissalMethod: e.target.value })}
+                    className={inp} placeholder="e.g. After Care" />
+                </div>
+              </div>
+
+              <div>
+                <label className={lbl}>Allergy Details</label>
+                <input value={camperForm.allergyDetails} onChange={e => setCamperForm({ ...camperForm, allergyDetails: e.target.value })}
+                  className={inp} placeholder="e.g. Peanut allergy — EpiPen in office" />
+              </div>
+
+              <div>
+                <label className={lbl}>Camper Notes</label>
+                <textarea value={camperForm.camperNotes} onChange={e => setCamperForm({ ...camperForm, camperNotes: e.target.value })}
+                  className={`${inp} h-20 resize-none`} placeholder="Notes visible to counselors" />
+              </div>
+
+              <div>
+                <label className={lbl}>Photo URL</label>
+                <input value={camperForm.photoUrl} onChange={e => setCamperForm({ ...camperForm, photoUrl: e.target.value })}
+                  className={inp} placeholder="https://..." />
+              </div>
+
+              <button onClick={handleSaveCamper}
+                className="w-full py-3 text-sm font-bold text-white rounded-xl active:opacity-80"
+                style={{ backgroundColor: "#023B64" }}>
+                {editingCamper ? "Save Changes" : "Add Camper"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -2951,6 +3389,874 @@ function AdminTodayChanges({ overrides, futureOverrides, camperMap, campers, onS
   );
 }
 
+// ─── Period Management ────────────────────────────────────────────────────────
+
+function PeriodManagement() {
+  const classes = useQuery(api.periodSchedules.getClasses);
+  const campers = useQuery(api.campers.list);
+  const allSchedules = useQuery(api.periodSchedules.list);
+  const bulkAssign = useMutation(api.periodSchedules.bulkAssign);
+  const checkInMut = useMutation(api.periodAttendance.checkIn);
+  const undoCheckInMut = useMutation(api.periodAttendance.undoCheckIn);
+  const [selectedClass, setSelectedClass] = useState<{ period: string; className: string } | null>(null);
+  const periodAttRecords = useQuery(api.periodAttendance.getForClassDate,
+    selectedClass ? { period: selectedClass.period, className: selectedClass.className } : "skip");
+  const [uploadStep, setUploadStep] = useState<"pick" | "map" | "preview" | null>(null);
+  const [csvData, setCsvData] = useState<{ headers: string[]; rows: CsvRow[] } | null>(null);
+  const [periodMapping, setPeriodMapping] = useState<Record<string, string>>({});
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<{ created: number; updated: number; errors: string[] } | null>(null);
+
+  if (classes === undefined || campers === undefined) return <Loading />;
+
+  const camperMap = new Map<string, CamperDoc>();
+  for (const c of campers) camperMap.set(c._id, c);
+  const camperByName = new Map<string, CamperDoc>();
+  for (const c of campers) {
+    const full = `${(c.preferredName ?? c.name).toLowerCase()} ${(c.lastName ?? "").toLowerCase()}`.trim();
+    camperByName.set(full, c);
+    camperByName.set((c.preferredName ?? c.name).toLowerCase(), c);
+  }
+
+  const PERIOD_UPLOAD_FIELDS: { key: string; label: string; required: boolean }[] = [
+    { key: "preferredName", label: "Preferred Name", required: true },
+    { key: "lastName", label: "Last Name", required: true },
+    { key: "bunk", label: "Bunk", required: false },
+    { key: "period1", label: "Period 1", required: false },
+    { key: "period2", label: "Period 2", required: false },
+    { key: "period3", label: "Period 3", required: false },
+    { key: "period4", label: "Period 4", required: false },
+    { key: "period5", label: "Period 5", required: false },
+    { key: "period6", label: "Period 6", required: false },
+    { key: "period7", label: "Period 7", required: false },
+  ];
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const parsed = parseCsv(ev.target?.result as string);
+      setCsvData(parsed);
+      setUploadResult(null);
+      const autoMap: Record<string, string> = {};
+      for (const field of PERIOD_UPLOAD_FIELDS) {
+        const match = parsed.headers.find(h => {
+          const norm = h.toLowerCase().replace(/[^a-z0-9]/g, "");
+          return norm === field.key.toLowerCase() || norm === field.label.toLowerCase().replace(/[^a-z0-9]/g, "");
+        });
+        if (match) autoMap[field.key] = match;
+      }
+      setPeriodMapping(autoMap);
+      setUploadStep("map");
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const periodRequiredMapped = PERIOD_UPLOAD_FIELDS.filter(f => f.required).every(f => periodMapping[f.key]);
+
+  const handleUpload = async () => {
+    if (!csvData) return;
+    setUploading(true);
+    const errors: string[] = [];
+    const assignments: { camperId: string; period: string; className: string }[] = [];
+
+    for (let i = 0; i < csvData.rows.length; i++) {
+      const row = csvData.rows[i];
+      const firstName = periodMapping.preferredName ? (row[periodMapping.preferredName]?.trim() ?? "") : "";
+      const lastName = periodMapping.lastName ? (row[periodMapping.lastName]?.trim() ?? "") : "";
+      const bunk = periodMapping.bunk ? (row[periodMapping.bunk]?.trim() ?? "") : "";
+
+      const searchKey = `${firstName} ${lastName}`.trim().toLowerCase();
+      let camper = camperByName.get(searchKey) ?? camperByName.get(firstName.toLowerCase());
+      if (!camper && bunk) {
+        camper = campers.find(c => (c.preferredName ?? c.name).toLowerCase() === firstName.toLowerCase() && (c.lastName ?? "").toLowerCase() === lastName.toLowerCase() && c.bunk === bunk);
+      }
+
+      if (!camper) { errors.push(`Row ${i + 2}: "${firstName} ${lastName}" not found`); continue; }
+
+      const isUpper = (camper.camp ?? "").toLowerCase().includes("upper") || (camper.campSection ?? "") === "Upper" || (camper.campDivision ?? "").toLowerCase().includes("upper");
+      if (!isUpper) { errors.push(`Row ${i + 2}: "${firstName} ${lastName}" is not Upper Camp — skipped`); continue; }
+
+      for (let p = 1; p <= 7; p++) {
+        const key = `period${p}`;
+        if (periodMapping[key]) {
+          const className = row[periodMapping[key]]?.trim();
+          if (className) assignments.push({ camperId: camper._id, period: `Period${p}`, className });
+        }
+      }
+    }
+
+    let result = { created: 0, updated: 0 };
+    if (assignments.length > 0) { result = await bulkAssign({ assignments: assignments as never }); }
+    setUploadResult({ ...result, errors });
+    setUploading(false);
+  };
+
+  const rosterCamperIds = selectedClass
+    ? (allSchedules ?? []).filter(s => s.period === selectedClass.period && s.className === selectedClass.className).map(s => s.camperId)
+    : [];
+  const rosterCampers = rosterCamperIds.map(id => camperMap.get(id as string)).filter(Boolean) as CamperDoc[];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Calendar size={22} className="text-slate-700" />
+        <h2 className="text-xl font-bold text-slate-900">Periods</h2>
+        <span className="text-sm text-slate-400 ml-1">{classes.length} classes</span>
+        <button onClick={() => setUploadStep(uploadStep ? null : "pick")}
+          className="ml-auto text-xs font-semibold px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-600 active:bg-slate-50">
+          {uploadStep ? "View Classes" : "Upload Schedule"}
+        </button>
+      </div>
+
+      {uploadStep ? (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          {uploadStep === "pick" && (
+            <div className="p-4 space-y-4">
+              <div>
+                <p className="text-sm font-semibold text-slate-700">Upload Upper Camp period schedule</p>
+                <p className="text-xs text-slate-400 mt-1">CSV: Preferred Name, Last Name, Bunk, Period 1–7</p>
+              </div>
+              <label className="inline-block text-xs font-semibold text-white px-3 py-2 rounded-xl cursor-pointer active:opacity-80"
+                style={{ backgroundColor: "#023B64" }}>
+                Choose CSV
+                <input type="file" accept=".csv" onChange={handleFile} className="hidden" />
+              </label>
+            </div>
+          )}
+
+          {uploadStep === "map" && csvData && (
+            <div className="divide-y divide-slate-100">
+              <div className="px-4 py-3 bg-slate-50">
+                <p className="text-sm font-semibold text-slate-700">{csvData.rows.length} rows · {csvData.headers.length} columns</p>
+                <p className="text-xs text-slate-400 mt-0.5">Map CSV columns to period fields</p>
+              </div>
+              {PERIOD_UPLOAD_FIELDS.map(field => (
+                <div key={field.key} className="flex items-center gap-3 px-4 py-3">
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm font-medium text-slate-900">{field.label}</span>
+                    {field.required && <span className="text-red-400 ml-0.5">*</span>}
+                  </div>
+                  <select value={periodMapping[field.key] ?? ""}
+                    onChange={e => setPeriodMapping({ ...periodMapping, [field.key]: e.target.value })}
+                    className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white w-40">
+                    <option value="">— skip —</option>
+                    {csvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+              ))}
+              <div className="px-4 py-3 flex gap-3">
+                <button onClick={() => setUploadStep("pick")} className="flex-1 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl">Back</button>
+                <button onClick={() => setUploadStep("preview")} disabled={!periodRequiredMapped}
+                  className="flex-1 py-2.5 text-sm font-bold text-white rounded-xl disabled:opacity-50" style={{ backgroundColor: "#023B64" }}>
+                  Preview
+                </button>
+              </div>
+            </div>
+          )}
+
+          {uploadStep === "preview" && csvData && (
+            <div className="divide-y divide-slate-100">
+              <div className="px-4 py-3 bg-slate-50">
+                <p className="text-sm font-semibold text-slate-700">Preview · {csvData.rows.length} campers</p>
+              </div>
+              {csvData.rows.slice(0, 5).map((row, i) => {
+                const name = `${row[periodMapping.preferredName]?.trim() ?? ""} ${row[periodMapping.lastName]?.trim() ?? ""}`.trim();
+                const periods = [];
+                for (let p = 1; p <= 7; p++) { const k = `period${p}`; if (periodMapping[k]) { const v = row[periodMapping[k]]?.trim(); if (v) periods.push(`P${p}: ${v}`); } }
+                return (
+                  <div key={i} className="px-4 py-2">
+                    <p className="text-sm font-semibold text-slate-900">{name || "—"}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{periods.join(" · ") || "No periods mapped"}</p>
+                  </div>
+                );
+              })}
+              {csvData.rows.length > 5 && <div className="px-4 py-2 text-xs text-slate-400">…and {csvData.rows.length - 5} more</div>}
+              <div className="px-4 py-3 flex gap-3">
+                <button onClick={() => setUploadStep("map")} className="flex-1 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl">Back</button>
+                <button onClick={handleUpload} disabled={uploading}
+                  className="flex-1 py-2.5 text-sm font-bold text-white rounded-xl disabled:opacity-50" style={{ backgroundColor: "#023B64" }}>
+                  {uploading ? "Uploading…" : "Upload"}
+                </button>
+              </div>
+              {uploadResult && (
+                <div className={`mx-4 mb-3 rounded-xl p-3 text-sm ${uploadResult.errors.length > 0 ? "bg-amber-50 border border-amber-200" : "bg-green-50 border border-green-200"}`}>
+                  <p className="font-semibold">{uploadResult.created} created, {uploadResult.updated} updated</p>
+                  {uploadResult.errors.map((e, i) => <p key={i} className="text-xs text-amber-700 mt-1">{e}</p>)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          {selectedClass ? (
+            <div>
+              <button onClick={() => setSelectedClass(null)} className="text-sm text-slate-500 mb-3 flex items-center gap-1">← All Classes</button>
+              <h3 className="text-lg font-bold text-slate-900 mb-1">{selectedClass.className}</h3>
+              <p className="text-xs text-slate-400 mb-3">{PERIOD_LABEL[selectedClass.period] ?? selectedClass.period} · {rosterCampers.length} campers</p>
+              <div className="space-y-2">
+                {rosterCampers.map(c => {
+                  const attRec = (periodAttRecords ?? []).find(r => r.camperId === c._id);
+                  const checked = attRec?.checkedIn === true;
+                  const presence = getCampusPresence(c);
+                  return (
+                    <div key={c._id} className="bg-white rounded-2xl border border-slate-200 flex items-center gap-3 px-4 py-3">
+                      <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white flex-shrink-0 overflow-hidden"
+                        style={{ backgroundColor: avatarBg(c.name) }}>
+                        {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-slate-900 text-sm">{camperName(c)}</span>
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${presence.status === "Here" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{presence.label}</span>
+                        </div>
+                        <p className="text-xs text-slate-500">{c.bunk}</p>
+                      </div>
+                      <button onClick={async () => {
+                        if (checked && attRec) { await undoCheckInMut({ id: attRec._id }); }
+                        else { await checkInMut({ camperId: c._id, period: selectedClass.period, className: selectedClass.className, staffId: "Admin" }); }
+                      }}
+                        className={`w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                          checked ? "bg-green-500 text-white" : "bg-slate-100 active:bg-slate-200"
+                        }`}>
+                        {checked && <Check size={18} strokeWidth={3} />}
+                      </button>
+                    </div>
+                  );
+                })}
+                {rosterCampers.length === 0 && <p className="text-center text-slate-400 py-6">No campers assigned to this class.</p>}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {classes.length === 0 && <p className="text-center text-slate-400 py-8">No period schedules uploaded yet.</p>}
+              {classes.map(cl => {
+                const count = (allSchedules ?? []).filter(s => s.period === cl.period && s.className === cl.className).length;
+                return (
+                  <button key={`${cl.period}::${cl.className}`} onClick={() => setSelectedClass(cl)}
+                    className="w-full text-left bg-white border border-slate-200 rounded-2xl px-4 py-3 flex items-center gap-3 active:bg-slate-50">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0"
+                      style={{ backgroundColor: "#e0f2fe", color: "#023B64" }}>{count}</div>
+                    <div className="flex-1">
+                      <p className="font-semibold text-slate-900 text-sm">{cl.className}</p>
+                      <p className="text-xs text-slate-500">{PERIOD_LABEL[cl.period] ?? cl.period}</p>
+                    </div>
+                    <ChevronRight size={16} className="text-slate-300" />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Lunch Management ─────────────────────────────────────────────────────────
+
+function getMonday(dateStr: string): string {
+  const d = new Date(dateStr + "T00:00:00");
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  const mon = new Date(d.setDate(diff));
+  return mon.toISOString().split("T")[0];
+}
+
+function getWeekDays(monday: string): { date: string; label: string }[] {
+  const labels = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+  const d = new Date(monday + "T00:00:00");
+  return labels.map((label, i) => {
+    const day = new Date(d);
+    day.setDate(d.getDate() + i);
+    return { date: day.toISOString().split("T")[0], label };
+  });
+}
+
+function LunchManagement() {
+  const [weekStart, setWeekStart] = useState(getMonday(today()));
+  const lunchRecords = useQuery(api.lunchRecords.getForWeek, { weekStartDate: weekStart });
+  const todayRecords = useQuery(api.lunchRecords.getForDate, { date: today() });
+  const campers = useQuery(api.campers.list);
+  const markPickedUp = useMutation(api.lunchRecords.markPickedUp);
+  const weeklyUpload = useMutation(api.lunchRecords.weeklyUpload);
+  const [uploadStep, setUploadStep] = useState<"pick" | "map" | "preview" | null>(null);
+  const [csvData, setCsvData] = useState<{ headers: string[]; rows: CsvRow[] } | null>(null);
+  const [lunchMapping, setLunchMapping] = useState<Record<string, string>>({});
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<{ created: number; updated: number; errors: string[] } | null>(null);
+  const [filter, setFilter] = useState<"all" | "ordered" | "picked" | "notpicked">("all");
+  const [q, setQ] = useState("");
+
+  if (lunchRecords === undefined || campers === undefined) return <Loading />;
+
+  const camperMap = new Map<string, CamperDoc>();
+  for (const c of campers) camperMap.set(c._id, c);
+  const camperByName = new Map<string, CamperDoc>();
+  for (const c of campers) {
+    const full = `${(c.preferredName ?? c.name).toLowerCase()} ${(c.lastName ?? "").toLowerCase()}`.trim();
+    camperByName.set(full, c);
+    if (c.name && c.name !== c.preferredName) camperByName.set(`${c.name.toLowerCase()} ${(c.lastName ?? "").toLowerCase()}`.trim(), c);
+  }
+
+  const weekDays = getWeekDays(weekStart);
+  const todayStr = today();
+  const todayLunch = (todayRecords ?? []);
+  const pickedUpToday = todayLunch.filter(r => r.pickedUp);
+  const notPickedUpToday = todayLunch.filter(r => !r.pickedUp);
+
+  const uniqueCamperIds = [...new Set(lunchRecords.map(r => r.camperId as string))];
+
+  const displayed = uniqueCamperIds.filter(id => {
+    const c = camperMap.get(id);
+    if (!c) return false;
+    if (q) {
+      const name = `${c.preferredName ?? c.name} ${c.lastName ?? ""}`.toLowerCase();
+      if (!name.includes(q.toLowerCase()) && !c.bunk.toLowerCase().includes(q.toLowerCase()) && !c.code.includes(q)) return false;
+    }
+    if (filter === "picked") return todayLunch.some(r => r.camperId === id && r.pickedUp);
+    if (filter === "notpicked") return todayLunch.some(r => r.camperId === id && !r.pickedUp);
+    return true;
+  });
+
+  const LUNCH_UPLOAD_FIELDS: { key: string; label: string; required: boolean }[] = [
+    { key: "preferredName", label: "Preferred Name", required: true },
+    { key: "lastName", label: "Last Name", required: true },
+    { key: "safetyCode", label: "Safety Code", required: false },
+    { key: "altLunch", label: "Alt Lunch", required: false },
+    { key: "notes", label: "Notes", required: false },
+    { key: "weekStartDate", label: "Week Start Date", required: false },
+  ];
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const parsed = parseCsv(ev.target?.result as string);
+      setCsvData(parsed);
+      setUploadResult(null);
+      const autoMap: Record<string, string> = {};
+      for (const field of LUNCH_UPLOAD_FIELDS) {
+        const match = parsed.headers.find(h => {
+          const norm = h.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const labelNorm = field.label.toLowerCase().replace(/[^a-z0-9]/g, "");
+          return norm === field.key.toLowerCase() || norm === labelNorm;
+        });
+        if (match) autoMap[field.key] = match;
+      }
+      setLunchMapping(autoMap);
+      setUploadStep("map");
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  const lunchRequiredMapped = LUNCH_UPLOAD_FIELDS.filter(f => f.required).every(f => lunchMapping[f.key]);
+
+  const handleUpload = async () => {
+    if (!csvData) return;
+    setUploading(true);
+    const errors: string[] = [];
+    const records: { camperId: string; altLunch?: string; note?: string }[] = [];
+
+    let uploadWeek = weekStart;
+    for (let i = 0; i < csvData.rows.length; i++) {
+      const row = csvData.rows[i];
+      const firstName = lunchMapping.preferredName ? (row[lunchMapping.preferredName]?.trim() ?? "") : "";
+      const lastName = lunchMapping.lastName ? (row[lunchMapping.lastName]?.trim() ?? "") : "";
+      const code = lunchMapping.safetyCode ? (row[lunchMapping.safetyCode]?.trim() ?? "") : "";
+      if (lunchMapping.weekStartDate && row[lunchMapping.weekStartDate]?.trim()) uploadWeek = getMonday(row[lunchMapping.weekStartDate].trim());
+
+      const searchKey = `${firstName} ${lastName}`.trim().toLowerCase();
+      let camper = camperByName.get(searchKey);
+      if (!camper && code) {
+        camper = campers.find(c => c.code === code && (c.preferredName ?? c.name).toLowerCase() === firstName.toLowerCase());
+      }
+
+      if (!camper) { errors.push(`Row ${i + 2}: "${firstName} ${lastName}"${code ? ` (#${code})` : ""} not found`); continue; }
+      if (camper.isActive === false) { errors.push(`Row ${i + 2}: "${firstName} ${lastName}" is inactive — skipped`); continue; }
+
+      const altLunch = lunchMapping.altLunch ? (row[lunchMapping.altLunch]?.trim() || undefined) : undefined;
+      const note = lunchMapping.notes ? (row[lunchMapping.notes]?.trim() || undefined) : undefined;
+      records.push({ camperId: camper._id, altLunch, note });
+    }
+
+    let result = { created: 0, updated: 0 };
+    if (records.length > 0) {
+      result = await weeklyUpload({ weekStartDate: uploadWeek, records: records as never });
+      setWeekStart(uploadWeek);
+    }
+    setUploadResult({ ...result, errors });
+    setUploading(false);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <UtensilsCrossed size={22} className="text-slate-700" />
+        <h2 className="text-xl font-bold text-slate-900">Lunch</h2>
+        <button onClick={() => setUploadStep(uploadStep ? null : "pick")}
+          className="ml-auto text-xs font-semibold px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-600 active:bg-slate-50">
+          {uploadStep ? "View Sheet" : "Upload Weekly"}
+        </button>
+      </div>
+
+      {uploadStep ? (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          {uploadStep === "pick" && (
+            <div className="p-4 space-y-4">
+              <div>
+                <p className="text-sm font-semibold text-slate-700">Upload weekly lunch sheet</p>
+                <p className="text-xs text-slate-400 mt-1">CSV: Preferred Name, Last Name, Safety Code, Alt Lunch, Notes</p>
+                <p className="text-xs text-slate-400">Alt Lunch: blank = regular all week, or day names separated by | (e.g. Tuesday|Thursday)</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-500">Week of:</label>
+                <input type="date" value={weekStart} onChange={e => setWeekStart(getMonday(e.target.value))}
+                  className="border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white" />
+              </div>
+              <label className="inline-block text-xs font-semibold text-white px-3 py-2 rounded-xl cursor-pointer active:opacity-80"
+                style={{ backgroundColor: "#023B64" }}>
+                Choose CSV
+                <input type="file" accept=".csv" onChange={handleFile} className="hidden" />
+              </label>
+            </div>
+          )}
+
+          {uploadStep === "map" && csvData && (
+            <div className="divide-y divide-slate-100">
+              <div className="px-4 py-3 bg-slate-50">
+                <p className="text-sm font-semibold text-slate-700">{csvData.rows.length} rows · {csvData.headers.length} columns</p>
+                <p className="text-xs text-slate-400 mt-0.5">Map CSV columns to lunch fields</p>
+              </div>
+              {LUNCH_UPLOAD_FIELDS.map(field => (
+                <div key={field.key} className="flex items-center gap-3 px-4 py-3">
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm font-medium text-slate-900">{field.label}</span>
+                    {field.required && <span className="text-red-400 ml-0.5">*</span>}
+                  </div>
+                  <select value={lunchMapping[field.key] ?? ""}
+                    onChange={e => setLunchMapping({ ...lunchMapping, [field.key]: e.target.value })}
+                    className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white w-40">
+                    <option value="">— skip —</option>
+                    {csvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                  </select>
+                </div>
+              ))}
+              <div className="px-4 py-3 flex gap-3">
+                <button onClick={() => setUploadStep("pick")} className="flex-1 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl">Back</button>
+                <button onClick={() => setUploadStep("preview")} disabled={!lunchRequiredMapped}
+                  className="flex-1 py-2.5 text-sm font-bold text-white rounded-xl disabled:opacity-50" style={{ backgroundColor: "#023B64" }}>
+                  Preview
+                </button>
+              </div>
+            </div>
+          )}
+
+          {uploadStep === "preview" && csvData && (
+            <div className="divide-y divide-slate-100">
+              <div className="px-4 py-3 bg-slate-50">
+                <p className="text-sm font-semibold text-slate-700">Preview · {csvData.rows.length} campers · Week of {weekStart}</p>
+              </div>
+              {csvData.rows.slice(0, 5).map((row, i) => {
+                const name = `${lunchMapping.preferredName ? (row[lunchMapping.preferredName]?.trim() ?? "") : ""} ${lunchMapping.lastName ? (row[lunchMapping.lastName]?.trim() ?? "") : ""}`.trim();
+                const code = lunchMapping.safetyCode ? (row[lunchMapping.safetyCode]?.trim() ?? "") : "";
+                const alt = lunchMapping.altLunch ? (row[lunchMapping.altLunch]?.trim() ?? "") : "";
+                return (
+                  <div key={i} className="px-4 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-slate-900">{name || "—"}</span>
+                      {code && <span className="text-xs text-slate-400 font-mono">#{code}</span>}
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">{alt ? `Alt lunch: ${alt}` : "Regular lunch all week"}</p>
+                  </div>
+                );
+              })}
+              {csvData.rows.length > 5 && <div className="px-4 py-2 text-xs text-slate-400">…and {csvData.rows.length - 5} more</div>}
+              <div className="px-4 py-3 flex gap-3">
+                <button onClick={() => setUploadStep("map")} className="flex-1 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl">Back</button>
+                <button onClick={handleUpload} disabled={uploading}
+                  className="flex-1 py-2.5 text-sm font-bold text-white rounded-xl disabled:opacity-50" style={{ backgroundColor: "#023B64" }}>
+                  {uploading ? "Uploading…" : `Upload for week of ${weekStart}`}
+                </button>
+              </div>
+              {uploadResult && (
+                <div className={`mx-4 mb-3 rounded-xl p-3 text-sm ${uploadResult.errors.length > 0 ? "bg-amber-50 border border-amber-200" : "bg-green-50 border border-green-200"}`}>
+                  <p className="font-semibold">{uploadResult.created} daily records created, {uploadResult.updated} updated</p>
+                  {uploadResult.errors.map((e, i) => <p key={i} className="text-xs text-amber-700 mt-1">{e}</p>)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-500">Week of:</label>
+            <input type="date" value={weekStart} onChange={e => setWeekStart(getMonday(e.target.value))}
+              className="border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white" />
+          </div>
+
+          <div className="flex gap-2">
+            <div className="bg-white border border-slate-200 rounded-xl px-3 py-2 flex-1 text-center">
+              <p className="text-lg font-bold text-slate-900">{uniqueCamperIds.length}</p>
+              <p className="text-[10px] text-slate-400 uppercase">On Sheet</p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl px-3 py-2 flex-1 text-center">
+              <p className="text-lg font-bold text-green-600">{pickedUpToday.length}</p>
+              <p className="text-[10px] text-slate-400 uppercase">Picked Up Today</p>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl px-3 py-2 flex-1 text-center">
+              <p className="text-lg font-bold text-amber-600">{notPickedUpToday.length}</p>
+              <p className="text-[10px] text-slate-400 uppercase">Waiting Today</p>
+            </div>
+          </div>
+
+          <div className="flex gap-1.5">
+            {([["all","All"],["notpicked","Not Picked Up"],["picked","Picked Up"]] as const).map(([val, label]) => (
+              <button key={val} onClick={() => setFilter(val)}
+                className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors ${filter === val ? "text-white" : "bg-white text-slate-500 border border-slate-200"}`}
+                style={filter === val ? { backgroundColor: "#023B64" } : undefined}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="relative">
+            <Search size={15} className="absolute left-3 top-3 text-slate-400" />
+            <input value={q} onChange={e => setQ(e.target.value)}
+              placeholder="Search name, bunk, code…"
+              className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm bg-white focus:outline-none" />
+          </div>
+
+          {/* Weekly grid */}
+          <div className="space-y-2">
+            {displayed.map(camperId => {
+              const c = camperMap.get(camperId);
+              if (!c) return null;
+              const presence = getCampusPresence(c);
+              const weekRecords = lunchRecords.filter(r => r.camperId === camperId);
+              return (
+                <div key={camperId} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="flex items-center gap-3 px-4 py-3">
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm text-white flex-shrink-0 overflow-hidden"
+                      style={{ backgroundColor: avatarBg(c.name) }}>
+                      {c.photoUrl ? <img src={c.photoUrl} alt="" className="w-full h-full object-cover" /> : (c.preferredName ?? c.name).charAt(0)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-semibold text-slate-900 text-sm">{camperName(c)}</span>
+                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${presence.status === "Here" ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>{presence.label}</span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">{c.bunk} · #{c.code}</p>
+                    </div>
+                  </div>
+                  <div className="border-t border-slate-100 px-4 py-2 flex gap-1">
+                    {weekDays.map(day => {
+                      const rec = weekRecords.find(r => r.date === day.date);
+                      if (!rec) return <div key={day.date} className="flex-1 text-center py-1"><p className="text-[10px] text-slate-300">{day.label}</p></div>;
+                      const isToday = day.date === todayStr;
+                      const isAlt = rec.lunchType === "alternate";
+                      return (
+                        <button key={day.date} onClick={() => isToday ? markPickedUp({ id: rec._id, pickedUp: !rec.pickedUp, staffId: "Admin" }) : undefined}
+                          className={`flex-1 rounded-lg py-1.5 text-center transition-colors ${isToday ? "cursor-pointer" : "cursor-default"} ${
+                            rec.pickedUp ? "bg-green-500 text-white"
+                            : isAlt ? "bg-amber-50 border border-amber-200"
+                            : "bg-slate-50 border border-slate-200"
+                          }`}>
+                          <p className={`text-[10px] font-bold ${rec.pickedUp ? "text-white" : isAlt ? "text-amber-700" : "text-slate-600"}`}>{day.label}</p>
+                          <p className={`text-[9px] ${rec.pickedUp ? "text-white/80" : isAlt ? "text-amber-500" : "text-slate-400"}`}>
+                            {rec.pickedUp ? "✓" : isAlt ? "Alt" : "Reg"}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+            {displayed.length === 0 && uniqueCamperIds.length === 0 && (
+              <p className="text-center text-slate-400 py-8">No lunch records for this week. Upload a weekly lunch sheet to get started.</p>
+            )}
+            {displayed.length === 0 && uniqueCamperIds.length > 0 && (
+              <p className="text-center text-slate-400 py-6">No results match your filter.</p>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Camp Structure Management ────────────────────────────────────────────────
+
+type StructureFormData = {
+  camp: string; division: string; bunk: string; displayName: string;
+  sortOrder: string; isActive: boolean;
+  defaultLocation: string; dismissalLocation: string;
+};
+
+const STRUCTURE_BLANK: StructureFormData = {
+  camp: "", division: "", bunk: "", displayName: "",
+  sortOrder: "", isActive: true,
+  defaultLocation: "", dismissalLocation: "",
+};
+
+function CampStructureManagement() {
+  const structure = useQuery(api.campStructure.list);
+  const campers = useQuery(api.campers.list);
+  const createEntry = useMutation(api.campStructure.create);
+  const updateEntry = useMutation(api.campStructure.update);
+  const removeEntry = useMutation(api.campStructure.remove);
+  const [q, setQ] = useState("");
+  const [editing, setEditing] = useState<Doc<"campStructure"> | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState("");
+  const [form, setForm] = useState<StructureFormData>(STRUCTURE_BLANK);
+  const [groupBy, setGroupBy] = useState<"camp" | "division">("camp");
+
+  if (structure === undefined) return <Loading />;
+
+  const camperCounts = new Map<string, number>();
+  for (const c of campers ?? []) {
+    camperCounts.set(c.bunk, (camperCounts.get(c.bunk) ?? 0) + 1);
+  }
+
+  const camps = [...new Set(structure.map(s => s.camp))].sort();
+  const divisions = [...new Set(structure.map(s => s.division))].sort();
+
+  const filtered = structure.filter(s => {
+    if (!q) return true;
+    const low = q.toLowerCase();
+    return s.camp.toLowerCase().includes(low) || s.division.toLowerCase().includes(low)
+      || s.bunk.toLowerCase().includes(low) || (s.displayName ?? "").toLowerCase().includes(low);
+  });
+
+  const sorted = [...filtered].sort((a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999) || a.bunk.localeCompare(b.bunk));
+
+  const groups = new Map<string, typeof sorted>();
+  for (const s of sorted) {
+    const key = groupBy === "camp" ? s.camp : s.division;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(s);
+  }
+  const sortedGroups = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+
+  const openAdd = () => { setForm(STRUCTURE_BLANK); setAdding(true); setEditing(null); setError(""); };
+  const openEdit = (s: Doc<"campStructure">) => {
+    setForm({
+      camp: s.camp, division: s.division, bunk: s.bunk,
+      displayName: s.displayName ?? "", sortOrder: s.sortOrder?.toString() ?? "",
+      isActive: s.isActive !== false,
+      defaultLocation: s.defaultLocation ?? "", dismissalLocation: s.dismissalLocation ?? "",
+    });
+    setEditing(s); setAdding(false); setError("");
+  };
+
+  const handleSave = async () => {
+    if (!form.camp.trim() || !form.division.trim() || !form.bunk.trim()) {
+      setError("Camp, division, and bunk are required"); return;
+    }
+    try {
+      const args = {
+        camp: form.camp.trim(),
+        division: form.division.trim(),
+        bunk: form.bunk.trim(),
+        displayName: form.displayName.trim() || undefined,
+        sortOrder: form.sortOrder ? parseInt(form.sortOrder) : undefined,
+        isActive: form.isActive,
+        defaultLocation: form.defaultLocation.trim() || undefined,
+        dismissalLocation: form.dismissalLocation.trim() || undefined,
+      };
+      if (editing) {
+        await updateEntry({ id: editing._id, ...args });
+      } else {
+        await createEntry(args);
+      }
+      setEditing(null); setAdding(false); setError("");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Save failed");
+    }
+  };
+
+  const handleDelete = async (s: Doc<"campStructure">) => {
+    const count = camperCounts.get(s.bunk) ?? 0;
+    if (!confirm(`Delete "${s.bunk}"?${count > 0 ? ` (${count} campers currently assigned)` : ""}`)) return;
+    await removeEntry({ id: s._id });
+    if (editing?._id === s._id) setEditing(null);
+  };
+
+  const showForm = adding || editing;
+  const inp = "w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none";
+  const lbl = "text-xs font-semibold text-slate-500 mb-1 block";
+
+  return (
+    <>
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <Building2 size={22} className="text-slate-700" />
+          <h2 className="text-xl font-bold text-slate-900">Camp Structure</h2>
+          <span className="text-sm text-slate-400 ml-1">{structure.length} bunks</span>
+          <button onClick={openAdd}
+            className="ml-auto flex items-center gap-1.5 text-sm font-semibold text-white px-3 py-2 rounded-xl active:opacity-80"
+            style={{ backgroundColor: "#023B64" }}>
+            + Add Bunk
+          </button>
+        </div>
+
+        <div className="relative">
+          <Search size={17} className="absolute left-3.5 top-3.5 text-slate-400" />
+          <input value={q} onChange={e => setQ(e.target.value)}
+            placeholder="Search camp, division, bunk…"
+            className="w-full pl-10 pr-3 py-3 border border-slate-200 rounded-xl focus:outline-none text-sm bg-white"
+            onFocus={e => (e.currentTarget.style.borderColor = "#023B64")}
+            onBlur={e => (e.currentTarget.style.borderColor = "")} />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-slate-400">Group by</span>
+          {([["camp", "Camp"], ["division", "Division"]] as const).map(([val, label]) => (
+            <button key={val} onClick={() => setGroupBy(val)}
+              className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors ${groupBy === val ? "text-white" : "bg-white text-slate-500 border border-slate-200"}`}
+              style={groupBy === val ? { backgroundColor: "#023B64" } : undefined}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {sortedGroups.map(([group, members]) => (
+          <div key={group}>
+            <div className="flex items-center gap-2 mb-2 px-1">
+              <span className="text-sm font-bold text-slate-700">{group}</span>
+              <span className="text-xs text-slate-400">{members.length} bunks</span>
+            </div>
+            <div className="space-y-2">
+              {members.map(s => {
+                const count = camperCounts.get(s.bunk) ?? 0;
+                return (
+                  <div key={s._id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                    <button onClick={() => openEdit(s)} className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-slate-50">
+                      <div className="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0"
+                        style={{ backgroundColor: s.isActive === false ? "#f1f5f9" : "#e0f2fe", color: s.isActive === false ? "#94a3b8" : "#023B64" }}>
+                        {count}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`font-semibold ${s.isActive === false ? "text-slate-400" : "text-slate-900"}`}>
+                            {s.displayName || s.bunk}
+                          </span>
+                          {s.isActive === false && <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">Inactive</span>}
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5 text-xs text-slate-500">
+                          <span>{s.camp}</span>
+                          <span>·</span>
+                          <span>{s.division}</span>
+                          {s.bunk !== (s.displayName || s.bunk) && <><span>·</span><span className="font-mono text-slate-400">{s.bunk}</span></>}
+                        </div>
+                      </div>
+                      <ChevronRight size={16} className="text-slate-300 flex-shrink-0" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        {sorted.length === 0 && (
+          <div className="text-center text-slate-400 py-8">
+            {structure.length === 0 ? "No camp structure defined yet. Add bunks to get started." : "No bunks match your search."}
+          </div>
+        )}
+      </div>
+
+      {showForm && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end">
+          <div className="absolute inset-0 bg-black/60" onClick={() => { setAdding(false); setEditing(null); }} />
+          <div className="relative bg-white rounded-t-3xl overflow-auto max-h-[85vh]">
+            <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 bg-slate-200 rounded-full" /></div>
+            <div className="px-5 pt-2 pb-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-bold text-slate-900">{editing ? "Edit Bunk" : "Add Bunk"}</h3>
+                {editing && (
+                  <button onClick={() => handleDelete(editing)}
+                    className="text-xs text-red-500 font-semibold px-3 py-1.5 rounded-lg active:bg-red-50">Delete</button>
+                )}
+              </div>
+
+              {error && <p className="text-sm text-red-500 font-medium">{error}</p>}
+
+              <div>
+                <label className={lbl}>Camp *</label>
+                <input value={form.camp} onChange={e => setForm({ ...form, camp: e.target.value })}
+                  className={inp} placeholder="e.g. Kaleidoscope" list="camp-suggestions" />
+                <datalist id="camp-suggestions">{camps.map(c => <option key={c} value={c} />)}</datalist>
+              </div>
+
+              <div>
+                <label className={lbl}>Division *</label>
+                <input value={form.division} onChange={e => setForm({ ...form, division: e.target.value })}
+                  className={inp} placeholder="e.g. Lower" list="div-suggestions" />
+                <datalist id="div-suggestions">{divisions.map(d => <option key={d} value={d} />)}</datalist>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Bunk Name *</label>
+                  <input value={form.bunk} onChange={e => setForm({ ...form, bunk: e.target.value })}
+                    className={inp} placeholder="e.g. Bunk 1A" />
+                </div>
+                <div>
+                  <label className={lbl}>Display Name</label>
+                  <input value={form.displayName} onChange={e => setForm({ ...form, displayName: e.target.value })}
+                    className={inp} placeholder="Optional" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Sort Order</label>
+                  <input value={form.sortOrder} onChange={e => setForm({ ...form, sortOrder: e.target.value.replace(/\D/g, "") })}
+                    className={`${inp} font-mono`} placeholder="e.g. 1" inputMode="numeric" />
+                </div>
+                <div className="flex items-end pb-1">
+                  <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                    <input type="checkbox" checked={form.isActive} onChange={e => setForm({ ...form, isActive: e.target.checked })}
+                      className="w-4 h-4 rounded border-slate-300" />
+                    Active
+                  </label>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={lbl}>Default Location</label>
+                  <input value={form.defaultLocation} onChange={e => setForm({ ...form, defaultLocation: e.target.value })}
+                    className={inp} placeholder="e.g. Field 2" />
+                </div>
+                <div>
+                  <label className={lbl}>Dismissal Location</label>
+                  <input value={form.dismissalLocation} onChange={e => setForm({ ...form, dismissalLocation: e.target.value })}
+                    className={inp} placeholder="e.g. Front Gate" />
+                </div>
+              </div>
+
+              <button onClick={handleSave}
+                className="w-full py-3 text-sm font-bold text-white rounded-xl active:opacity-80"
+                style={{ backgroundColor: "#023B64" }}>
+                {editing ? "Save Changes" : "Add Bunk"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ─── Staff Management ─────────────────────────────────────────────────────────
 
 const ALL_ROLES: Role[] = ["counselor","specialist","carline","walkup","dispatcher","runner","director","admin","beforecare","aftercare","bus","unithead"];
@@ -3052,6 +4358,7 @@ type StaffCsvError = { row: number; field: string; message: string };
 function StaffManagement() {
   const staffList = useQuery(api.staff.list);
   const bunkList  = useQuery(api.campers.getBunks, {});
+  const structureBunks = useQuery(api.campStructure.list);
   const createStaff = useMutation(api.staff.create);
   const updateStaff = useMutation(api.staff.update);
   const removeStaff = useMutation(api.staff.remove);
@@ -3060,12 +4367,17 @@ function StaffManagement() {
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState<StaffFormData>(STAFF_BLANK);
-  const [csvTab, setCsvTab] = useState(false);
-  const [csvPreview, setCsvPreview] = useState<{ rows: StaffFormData[]; errors: StaffCsvError[] } | null>(null);
+  const [staffUploadStep, setStaffUploadStep] = useState<"pick" | "map" | "preview" | null>(null);
+  const [staffCsvData, setStaffCsvData] = useState<{ headers: string[]; rows: CsvRow[] } | null>(null);
+  const [staffMapping, setStaffMapping] = useState<Record<string, string>>({});
   const [csvUploading, setCsvUploading] = useState(false);
+  const [staffUploadResult, setStaffUploadResult] = useState<{ created: number; updated: number; errors: string[] } | null>(null);
   const [groupBy, setGroupBy] = useState<"none" | "camp" | "division" | "bunk" | "primaryJob" | "secondaryJob">("none");
 
-  const bunks = bunkList ?? [];
+  const bunks = [...new Set([
+    ...(bunkList ?? []),
+    ...(structureBunks ?? []).filter(s => s.isActive !== false).map(s => s.bunk),
+  ])].sort();
 
   const openAdd = () => { setForm(STAFF_BLANK); setAdding(true); setEditing(null); setError(""); };
   const openEdit = (s: StaffDoc) => {
@@ -3130,92 +4442,96 @@ function StaffManagement() {
     "director": "director", "carline": "carline", "walkup": "walkup", "dispatcher": "dispatcher",
   };
 
-  const parseBool = (v: string) => ["true","yes","1","y"].includes(v.toLowerCase().trim());
+  const parseBoolVal = (v: string) => ["true","yes","1","y"].includes(v.toLowerCase().trim());
+
+  const STAFF_UPLOAD_FIELDS: { key: string; label: string; required: boolean }[] = [
+    { key: "firstName", label: "First Name", required: true },
+    { key: "lastName", label: "Last Name", required: true },
+    { key: "loginCode", label: "Login Code", required: true },
+    { key: "email", label: "Email", required: false },
+    { key: "phone", label: "Phone", required: false },
+    { key: "primaryRole", label: "Primary Role", required: true },
+    { key: "assignedBunk", label: "Assigned Bunk", required: false },
+    { key: "assignedUnit", label: "Assigned Unit", required: false },
+    { key: "campSection", label: "Camp Section", required: false },
+    { key: "busRoute", label: "Bus Route", required: false },
+    { key: "camp", label: "Camp", required: false },
+    { key: "division", label: "Division", required: false },
+    { key: "primaryJob", label: "Primary Job", required: false },
+    { key: "secondaryJob", label: "Secondary Job", required: false },
+    { key: "canBeRunner", label: "Can Be Runner", required: false },
+    { key: "isActive", label: "Is Active", required: false },
+    { key: "runnerLabel", label: "Runner Label", required: false },
+  ];
 
   const handleCsvFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const text = ev.target?.result as string;
-      const { headers, rows: rawRows } = parseCsv(text);
-      const errors: StaffCsvError[] = [];
-      const rows: StaffFormData[] = [];
-      rawRows.forEach((row, i) => {
-        const rn = i + 2;
-        const fn = row["firstName"]?.trim() ?? "";
-        const ln = row["lastName"]?.trim() ?? "";
-        if (!fn) errors.push({ row: rn, field: "firstName", message: "Required" });
-        if (!ln) errors.push({ row: rn, field: "lastName", message: "Required" });
-        const roleRaw = row["primaryRole"]?.trim().toLowerCase() ?? "";
-        const role = csvRoleMap[roleRaw];
-        if (!role && roleRaw) errors.push({ row: rn, field: "primaryRole", message: `Unknown role: ${row["primaryRole"]}` });
-        if (!role && !roleRaw) errors.push({ row: rn, field: "primaryRole", message: "Required" });
-        const bunk = row["assignedBunk"]?.trim() ?? "";
-        if (bunk && bunks.length > 0 && !bunks.includes(bunk)) errors.push({ row: rn, field: "assignedBunk", message: `Unknown bunk: ${bunk}` });
-        const unit = row["assignedUnit"]?.trim() ?? "";
-        if (unit && !UNIT_OPTIONS.includes(unit)) errors.push({ row: rn, field: "assignedUnit", message: `Unknown unit: ${unit}` });
-        const br = row["busRoute"]?.trim() ?? "";
-        if (br && !BUS_ROUTES.includes(br)) errors.push({ row: rn, field: "busRoute", message: `Unknown bus route: ${br}` });
-        rows.push({
-          firstName: fn, lastName: ln,
-          email: row["email"]?.trim() ?? "",
-          phone: row["phone"]?.trim() ?? "",
-          code: row["loginCode"]?.trim() ?? "",
-          role: role ?? "counselor",
-          extraRoles: [],
-          bunkAssignment: bunk,
-          unitAssignment: unit,
-          campSection: row["campSection"]?.trim() ?? "",
-          busRoute: br,
-          camp: row["camp"]?.trim() ?? "",
-          division: row["division"]?.trim() ?? "",
-          primaryJob: row["primaryJob"]?.trim() ?? "",
-          secondaryJob: row["secondaryJob"]?.trim() ?? "",
-          canBeRunner: parseBool(row["canBeRunner"] ?? ""),
-          runnerLabel: row["runnerLabel"]?.trim() ?? "",
-          isActive: row["isActive"] ? parseBool(row["isActive"]) : true,
+      const parsed = parseCsv(ev.target?.result as string);
+      setStaffCsvData(parsed);
+      setStaffUploadResult(null);
+      const autoMap: Record<string, string> = {};
+      for (const field of STAFF_UPLOAD_FIELDS) {
+        const match = parsed.headers.find(h => {
+          const norm = h.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const labelNorm = field.label.toLowerCase().replace(/[^a-z0-9]/g, "");
+          const keyNorm = field.key.toLowerCase();
+          return norm === keyNorm || norm === labelNorm;
         });
-      });
-      setCsvPreview({ rows, errors });
+        if (match) autoMap[field.key] = match;
+      }
+      setStaffMapping(autoMap);
+      setStaffUploadStep("map");
     };
     reader.readAsText(file);
     e.target.value = "";
   };
 
+  const staffRequiredMapped = STAFF_UPLOAD_FIELDS.filter(f => f.required).every(f => staffMapping[f.key]);
+
   const handleCsvUpload = async () => {
-    if (!csvPreview || csvPreview.errors.length > 0) return;
+    if (!staffCsvData) return;
     setCsvUploading(true);
+    const errors: string[] = [];
+    let created = 0, updated = 0;
     try {
-      for (const row of csvPreview.rows) {
-        const name = `${row.firstName} ${row.lastName}`.trim();
-        const existing = staffList?.find(s => s.email && s.email === row.email);
+      for (let i = 0; i < staffCsvData.rows.length; i++) {
+        const row = staffCsvData.rows[i];
+        const fn = staffMapping.firstName ? (row[staffMapping.firstName]?.trim() ?? "") : "";
+        const ln = staffMapping.lastName ? (row[staffMapping.lastName]?.trim() ?? "") : "";
+        const code = staffMapping.loginCode ? (row[staffMapping.loginCode]?.trim() ?? "") : "";
+        if (!fn || !code) { errors.push(`Row ${i + 2}: missing first name or login code`); continue; }
+
+        const roleRaw = staffMapping.primaryRole ? (row[staffMapping.primaryRole]?.trim().toLowerCase() ?? "") : "";
+        const role = csvRoleMap[roleRaw];
+        if (!role) { errors.push(`Row ${i + 2}: unknown role "${roleRaw}"`); continue; }
+
+        const name = `${fn} ${ln}`.trim();
+        const email = staffMapping.email ? (row[staffMapping.email]?.trim() || undefined) : undefined;
         const args = {
-          name, firstName: row.firstName || undefined, lastName: row.lastName || undefined,
-          email: row.email || undefined, phone: row.phone || undefined,
-          code: row.code, role: row.role,
-          bunkAssignment: row.bunkAssignment || undefined,
-          unitAssignment: row.unitAssignment || undefined,
-          campSection: row.campSection || undefined,
-          busRoute: row.busRoute || undefined,
-          camp: row.camp || undefined,
-          division: row.division || undefined,
-          primaryJob: row.primaryJob || undefined,
-          secondaryJob: row.secondaryJob || undefined,
-          canBeRunner: row.canBeRunner || row.primaryJob === "Dismissal Runner" || row.secondaryJob === "Dismissal Runner" || undefined,
-          runnerLabel: row.runnerLabel || undefined,
-          isActive: row.isActive,
+          name, firstName: fn || undefined, lastName: ln || undefined,
+          email, phone: staffMapping.phone ? (row[staffMapping.phone]?.trim() || undefined) : undefined,
+          code, role,
+          bunkAssignment: staffMapping.assignedBunk ? (row[staffMapping.assignedBunk]?.trim() || undefined) : undefined,
+          unitAssignment: staffMapping.assignedUnit ? (row[staffMapping.assignedUnit]?.trim() || undefined) : undefined,
+          campSection: staffMapping.campSection ? (row[staffMapping.campSection]?.trim() || undefined) : undefined,
+          busRoute: staffMapping.busRoute ? (row[staffMapping.busRoute]?.trim() || undefined) : undefined,
+          camp: staffMapping.camp ? (row[staffMapping.camp]?.trim() || undefined) : undefined,
+          division: staffMapping.division ? (row[staffMapping.division]?.trim() || undefined) : undefined,
+          primaryJob: staffMapping.primaryJob ? (row[staffMapping.primaryJob]?.trim() || undefined) : undefined,
+          secondaryJob: staffMapping.secondaryJob ? (row[staffMapping.secondaryJob]?.trim() || undefined) : undefined,
+          canBeRunner: staffMapping.canBeRunner ? (parseBoolVal(row[staffMapping.canBeRunner] ?? "") || undefined) : undefined,
+          runnerLabel: staffMapping.runnerLabel ? (row[staffMapping.runnerLabel]?.trim() || undefined) : undefined,
+          isActive: staffMapping.isActive ? parseBoolVal(row[staffMapping.isActive] ?? "true") : true,
         };
-        if (existing) {
-          await updateStaff({ id: existing._id, ...args });
-        } else {
-          await createStaff(args);
-        }
+        const existing = email ? staffList?.find(s => s.email && s.email === email) : undefined;
+        if (existing) { await updateStaff({ id: existing._id, ...args }); updated++; }
+        else { await createStaff(args); created++; }
       }
-      setCsvPreview(null);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Upload failed");
-    }
+    } catch (e: unknown) { errors.push(e instanceof Error ? e.message : "Upload failed"); }
+    setStaffUploadResult({ created, updated, errors });
     setCsvUploading(false);
   };
 
@@ -3289,62 +4605,98 @@ function StaffManagement() {
 
         {/* CSV actions */}
         <div className="flex gap-2 flex-wrap">
-          <button onClick={() => setCsvTab(!csvTab)}
+          <button onClick={() => setStaffUploadStep(staffUploadStep ? null : "pick")}
             className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 active:bg-slate-50">
-            {csvTab ? "Hide CSV" : "CSV Upload / Download"}
+            {staffUploadStep ? "Hide Upload" : "CSV Upload"}
+          </button>
+          <button onClick={downloadCsv} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 active:bg-slate-50">
+            Download CSV
+          </button>
+          <button onClick={downloadTemplate} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 active:bg-slate-50">
+            Template
           </button>
         </div>
-        {csvTab && (
-          <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
-            <div className="flex gap-2 flex-wrap">
-              <label className="text-xs font-semibold text-white px-3 py-1.5 rounded-lg cursor-pointer active:opacity-80"
-                style={{ backgroundColor: "#023B64" }}>
-                Upload Staff CSV
-                <input type="file" accept=".csv" onChange={handleCsvFile} className="hidden" />
-              </label>
-              <button onClick={downloadCsv} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 active:bg-slate-50">
-                Download Staff CSV
-              </button>
-              <button onClick={downloadTemplate} className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 active:bg-slate-50">
-                Download Template
-              </button>
-            </div>
-            {csvPreview && (
-              <div className="space-y-2">
-                <p className="text-sm font-semibold text-slate-700">{csvPreview.rows.length} staff found</p>
-                {csvPreview.errors.length > 0 && (
-                  <div className="bg-red-50 border border-red-200 rounded-xl p-3 space-y-1">
-                    <p className="text-xs font-bold text-red-600">{csvPreview.errors.length} error(s) — fix before uploading</p>
-                    {csvPreview.errors.map((err, i) => (
-                      <p key={i} className="text-xs text-red-600">Row {err.row}, {err.field}: {err.message}</p>
-                    ))}
-                  </div>
-                )}
-                {csvPreview.errors.length === 0 && (
-                  <div className="space-y-1">
-                    <div className="max-h-48 overflow-auto border border-slate-200 rounded-xl">
-                      <table className="w-full text-xs">
-                        <thead><tr className="bg-slate-50 text-left"><th className="px-2 py-1">Name</th><th className="px-2 py-1">Role</th><th className="px-2 py-1">Code</th><th className="px-2 py-1">Bunk</th></tr></thead>
-                        <tbody>
-                          {csvPreview.rows.map((r, i) => (
-                            <tr key={i} className="border-t border-slate-100">
-                              <td className="px-2 py-1">{r.firstName} {r.lastName}</td>
-                              <td className="px-2 py-1">{PRIMARY_ROLE_OPTIONS.find(o => o.value === r.role)?.label ?? r.role}</td>
-                              <td className="px-2 py-1 font-mono">{r.code}</td>
-                              <td className="px-2 py-1">{r.bunkAssignment}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+        {staffUploadStep && (
+          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+            {staffUploadStep === "pick" && (
+              <div className="p-4 space-y-4">
+                <div>
+                  <p className="text-sm font-semibold text-slate-700">Upload staff CSV</p>
+                  <p className="text-xs text-slate-400 mt-1">CSV: First Name, Last Name, Login Code, Primary Role, and optional fields</p>
+                </div>
+                <label className="inline-block text-xs font-semibold text-white px-3 py-2 rounded-xl cursor-pointer active:opacity-80"
+                  style={{ backgroundColor: "#023B64" }}>
+                  Choose CSV
+                  <input type="file" accept=".csv" onChange={handleCsvFile} className="hidden" />
+                </label>
+              </div>
+            )}
+
+            {staffUploadStep === "map" && staffCsvData && (
+              <div className="divide-y divide-slate-100">
+                <div className="px-4 py-3 bg-slate-50">
+                  <p className="text-sm font-semibold text-slate-700">{staffCsvData.rows.length} rows · {staffCsvData.headers.length} columns</p>
+                  <p className="text-xs text-slate-400 mt-0.5">Map CSV columns to staff fields</p>
+                </div>
+                {STAFF_UPLOAD_FIELDS.map(field => (
+                  <div key={field.key} className="flex items-center gap-3 px-4 py-3">
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-medium text-slate-900">{field.label}</span>
+                      {field.required && <span className="text-red-400 ml-0.5">*</span>}
                     </div>
-                    <button onClick={handleCsvUpload} disabled={csvUploading}
-                      className="w-full py-2.5 text-sm font-bold text-white rounded-xl active:opacity-80 disabled:opacity-50"
-                      style={{ backgroundColor: "#023B64" }}>
-                      {csvUploading ? "Uploading…" : `Upload ${csvPreview.rows.length} Staff`}
-                    </button>
+                    <select value={staffMapping[field.key] ?? ""}
+                      onChange={e => setStaffMapping({ ...staffMapping, [field.key]: e.target.value })}
+                      className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white w-40">
+                      <option value="">— skip —</option>
+                      {staffCsvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </div>
+                ))}
+                <div className="px-4 py-3 flex gap-3">
+                  <button onClick={() => setStaffUploadStep("pick")} className="flex-1 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl">Back</button>
+                  <button onClick={() => setStaffUploadStep("preview")} disabled={!staffRequiredMapped}
+                    className="flex-1 py-2.5 text-sm font-bold text-white rounded-xl disabled:opacity-50" style={{ backgroundColor: "#023B64" }}>
+                    Preview
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {staffUploadStep === "preview" && staffCsvData && (
+              <div className="divide-y divide-slate-100">
+                <div className="px-4 py-3 bg-slate-50">
+                  <p className="text-sm font-semibold text-slate-700">Preview · {staffCsvData.rows.length} staff</p>
+                </div>
+                {staffCsvData.rows.slice(0, 5).map((row, i) => {
+                  const name = `${staffMapping.firstName ? (row[staffMapping.firstName]?.trim() ?? "") : ""} ${staffMapping.lastName ? (row[staffMapping.lastName]?.trim() ?? "") : ""}`.trim();
+                  const role = staffMapping.primaryRole ? (row[staffMapping.primaryRole]?.trim() ?? "") : "";
+                  const code = staffMapping.loginCode ? (row[staffMapping.loginCode]?.trim() ?? "") : "";
+                  const bunk = staffMapping.assignedBunk ? (row[staffMapping.assignedBunk]?.trim() ?? "") : "";
+                  return (
+                    <div key={i} className="px-4 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-slate-900">{name || "—"}</span>
+                        {code && <span className="text-xs text-slate-400 font-mono">{code}</span>}
+                        {role && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: "#023B64" }}>{role}</span>}
+                      </div>
+                      {bunk && <p className="text-xs text-slate-500 mt-0.5">{bunk}</p>}
+                    </div>
+                  );
+                })}
+                {staffCsvData.rows.length > 5 && <div className="px-4 py-2 text-xs text-slate-400">…and {staffCsvData.rows.length - 5} more</div>}
+                <div className="px-4 py-3 flex gap-3">
+                  <button onClick={() => setStaffUploadStep("map")} className="flex-1 py-2.5 text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl">Back</button>
+                  <button onClick={handleCsvUpload} disabled={csvUploading}
+                    className="flex-1 py-2.5 text-sm font-bold text-white rounded-xl disabled:opacity-50" style={{ backgroundColor: "#023B64" }}>
+                    {csvUploading ? "Uploading…" : "Upload Staff"}
+                  </button>
+                </div>
+                {staffUploadResult && (
+                  <div className={`mx-4 mb-3 rounded-xl p-3 text-sm ${staffUploadResult.errors.length > 0 ? "bg-amber-50 border border-amber-200" : "bg-green-50 border border-green-200"}`}>
+                    <p className="font-semibold">{staffUploadResult.created} created, {staffUploadResult.updated} updated</p>
+                    {staffUploadResult.errors.map((e, i) => <p key={i} className="text-xs text-amber-700 mt-1">{e}</p>)}
                   </div>
                 )}
-                <button onClick={() => setCsvPreview(null)} className="text-xs text-slate-400 active:text-slate-600">Cancel</button>
               </div>
             )}
           </div>
@@ -3605,7 +4957,7 @@ function StaffManagement() {
                   <select value={form.busRoute} onChange={e => setForm({ ...form, busRoute: e.target.value })}
                     className={`${inp} bg-white`}>
                     <option value="">Select bus route…</option>
-                    {BUS_ROUTES.map(r => <option key={r} value={r}>{r}</option>)}
+                    {BUS_ROUTES_FALLBACK.map(r => <option key={r} value={r}>{r}</option>)}
                   </select>
                 </div>
               )}
@@ -3699,6 +5051,8 @@ const CAMPER_FIELDS: { key: string; label: string; required: boolean; boolean?: 
   { key: "photoUrl",        label: "Photo URL",         required: false },
   { key: "allergyNotes",    label: "Allergy Notes",     required: false },
   { key: "camperNotes",     label: "Camper Notes",      required: false },
+  { key: "busStop",         label: "Bus Stop",          required: false },
+  { key: "walkPermission",  label: "Walk Permission",   required: false, boolean: true },
 ];
 
 const parseBool = (val: string) =>
@@ -3736,19 +5090,47 @@ const EXPORT_COLUMNS = [
 
 // ─── CamperUpload ─────────────────────────────────────────────────────────────
 
+function normalizeBunkName(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function fuzzyBunkMatch(input: string, knownBunks: string[]): string | null {
+  const norm = normalizeBunkName(input);
+  if (!norm) return null;
+  for (const b of knownBunks) {
+    if (normalizeBunkName(b) === norm) return b;
+  }
+  for (const b of knownBunks) {
+    const nb = normalizeBunkName(b);
+    if (nb.includes(norm) || norm.includes(nb)) return b;
+  }
+  return null;
+}
+
+type BunkIssue = {
+  csvBunk: string;
+  rows: number[];
+  suggestion: string | null;
+  resolution: "match" | "create" | "skip" | null;
+  matchTo: string;
+};
+
 function CamperUpload() {
   const allCampers   = useQuery(api.campers.list);
+  const campStructure = useQuery(api.campStructure.list);
   const createCamper    = useMutation(api.campers.create);
   const deleteAll       = useMutation(api.campers.deleteAllCampers);
   const clearDailyState = useMutation(api.campers.clearDailyState);
+  const createStructure = useMutation(api.campStructure.create);
 
   // Upload flow
-  const [step, setStep]       = useState<"pick"|"map"|"preview"|"done">("pick");
+  const [step, setStep]       = useState<"pick"|"map"|"preview"|"bunkReview"|"done">("pick");
   const [csvData, setCsvData] = useState<{ headers: string[]; rows: CsvRow[] }>({ headers: [], rows: [] });
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [warnings, setWarnings] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [result, setResult]   = useState<{ added: number; skipped: number; errors: string[] }>({ added: 0, skipped: 0, errors: [] });
+  const [bunkIssues, setBunkIssues] = useState<BunkIssue[]>([]);
 
   // Clear modal
   const [showClear, setShowClear]         = useState(false);
@@ -3851,6 +5233,28 @@ function CamperUpload() {
 
   const goToPreview = () => {
     setWarnings(buildWarnings());
+    const knownBunks = (campStructure ?? []).filter(s => s.isActive !== false).map(s => s.bunk);
+    if (knownBunks.length > 0) {
+      const bunkRows = new Map<string, number[]>();
+      csvData.rows.forEach((row, i) => {
+        const bunk = row[mapping.bunk]?.trim();
+        if (bunk) {
+          if (!bunkRows.has(bunk)) bunkRows.set(bunk, []);
+          bunkRows.get(bunk)!.push(i + 2);
+        }
+      });
+      const issues: BunkIssue[] = [];
+      for (const [csvBunk, rows] of bunkRows) {
+        if (knownBunks.includes(csvBunk)) continue;
+        const suggestion = fuzzyBunkMatch(csvBunk, knownBunks);
+        issues.push({ csvBunk, rows, suggestion, resolution: suggestion ? "match" : null, matchTo: suggestion ?? "" });
+      }
+      if (issues.length > 0) {
+        setBunkIssues(issues);
+        setStep("bunkReview");
+        return;
+      }
+    }
     setStep("preview");
   };
 
@@ -3911,6 +5315,13 @@ function CamperUpload() {
           camper.camperNotes = camperNotes;
           camper.hasNotes = true;
         }
+
+        // Bus fields
+        const busStop = mapping.busStop && row[mapping.busStop]?.trim();
+        if (busStop) camper.busStop = busStop;
+
+        const walkPerm = mapping.walkPermission && row[mapping.walkPermission]?.trim();
+        if (walkPerm) camper.walkPermission = parseBool(walkPerm);
 
         await createCamper(camper as Parameters<typeof createCamper>[0]);
         added++;
@@ -4103,6 +5514,124 @@ function CamperUpload() {
                 className="flex-1 py-3 text-sm font-bold text-white rounded-xl disabled:opacity-40"
                 style={{ backgroundColor: "#023B64" }}>
                 Preview →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step: Bunk Review */}
+        {step === "bunkReview" && (
+          <div className="space-y-4 p-4">
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+              <p className="text-sm font-bold text-amber-800">Bunk validation</p>
+              <p className="text-xs text-amber-700 mt-1">
+                {bunkIssues.length} bunk{bunkIssues.length !== 1 ? "s" : ""} in your CSV {bunkIssues.length !== 1 ? "don't" : "doesn't"} match
+                the camp structure. Resolve each one before uploading.
+              </p>
+            </div>
+
+            {bunkIssues.map((issue, idx) => {
+              const knownBunks = (campStructure ?? []).filter(s => s.isActive !== false).map(s => s.bunk);
+              return (
+                <div key={issue.csvBunk} className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle size={16} className="text-amber-500 flex-shrink-0" />
+                    <span className="font-bold text-slate-900 text-sm">"{issue.csvBunk}"</span>
+                    <span className="text-xs text-slate-400">({issue.rows.length} camper{issue.rows.length !== 1 ? "s" : ""})</span>
+                  </div>
+
+                  {issue.suggestion && (
+                    <p className="text-xs text-slate-500">
+                      Did you mean <span className="font-bold text-slate-700">"{issue.suggestion}"</span>?
+                    </p>
+                  )}
+
+                  <div className="flex gap-2 flex-wrap">
+                    <button onClick={() => {
+                      const updated = [...bunkIssues];
+                      updated[idx] = { ...issue, resolution: "match", matchTo: issue.suggestion ?? "" };
+                      setBunkIssues(updated);
+                    }}
+                      className={`text-xs font-semibold px-3 py-2 rounded-xl transition-colors ${
+                        issue.resolution === "match" ? "text-white" : "bg-slate-100 text-slate-600"
+                      }`}
+                      style={issue.resolution === "match" ? { backgroundColor: "#023B64" } : undefined}
+                      disabled={!issue.suggestion && !issue.matchTo}>
+                      Match to existing
+                    </button>
+                    <button onClick={() => {
+                      const updated = [...bunkIssues];
+                      updated[idx] = { ...issue, resolution: "create" };
+                      setBunkIssues(updated);
+                    }}
+                      className={`text-xs font-semibold px-3 py-2 rounded-xl transition-colors ${
+                        issue.resolution === "create" ? "text-white bg-green-600" : "bg-slate-100 text-slate-600"
+                      }`}>
+                      Create new bunk
+                    </button>
+                    <button onClick={() => {
+                      const updated = [...bunkIssues];
+                      updated[idx] = { ...issue, resolution: "skip" };
+                      setBunkIssues(updated);
+                    }}
+                      className={`text-xs font-semibold px-3 py-2 rounded-xl transition-colors ${
+                        issue.resolution === "skip" ? "text-white bg-red-500" : "bg-slate-100 text-slate-600"
+                      }`}>
+                      Skip these rows
+                    </button>
+                  </div>
+
+                  {issue.resolution === "match" && (
+                    <select value={issue.matchTo}
+                      onChange={e => {
+                        const updated = [...bunkIssues];
+                        updated[idx] = { ...issue, matchTo: e.target.value };
+                        setBunkIssues(updated);
+                      }}
+                      className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white">
+                      <option value="">Select bunk…</option>
+                      {knownBunks.map(b => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                  )}
+                </div>
+              );
+            })}
+
+            <div className="flex gap-3">
+              <button onClick={() => setStep("map")}
+                className="flex-1 py-3 text-sm font-semibold text-slate-600 bg-slate-100 rounded-xl active:bg-slate-200">
+                Back
+              </button>
+              <button onClick={async () => {
+                const allResolved = bunkIssues.every(i => i.resolution !== null);
+                if (!allResolved) return;
+                for (const issue of bunkIssues) {
+                  if (issue.resolution === "create") {
+                    try {
+                      await createStructure({ camp: "Unassigned", division: "Unassigned", bunk: issue.csvBunk });
+                    } catch { /* already exists */ }
+                  }
+                  if (issue.resolution === "match" && issue.matchTo) {
+                    for (const row of csvData.rows) {
+                      if (row[mapping.bunk]?.trim() === issue.csvBunk) {
+                        row[mapping.bunk] = issue.matchTo;
+                      }
+                    }
+                  }
+                }
+                const skippedBunks = new Set(bunkIssues.filter(i => i.resolution === "skip").map(i => i.csvBunk));
+                if (skippedBunks.size > 0) {
+                  setCsvData({
+                    ...csvData,
+                    rows: csvData.rows.filter(r => !skippedBunks.has(r[mapping.bunk]?.trim())),
+                  });
+                }
+                setStep("preview");
+              }}
+                disabled={bunkIssues.some(i => i.resolution === null || (i.resolution === "match" && !i.matchTo))}
+                className="flex-1 py-3 text-sm font-bold text-white rounded-xl active:opacity-80 disabled:opacity-50"
+                style={{ backgroundColor: "#023B64" }}>
+                Continue
               </button>
             </div>
           </div>

@@ -190,14 +190,21 @@ export default defineSchema({
     afterCare: v.optional(v.boolean()),
 
     // ── Week 0 simplified transport ─────────────────────────────────────
-    arrivalMethod: v.optional(v.string()),     // e.g. "Carline", "Before Care", "Bus 1"
-    dismissalMethod: v.optional(v.string()),   // e.g. "Carline", "After Care", "Bus 2"
+    arrivalMethod: v.optional(v.string()),     // e.g. "Carline", "Before Care", "Blue Bus"
+    dismissalMethod: v.optional(v.string()),   // e.g. "Carline", "After Care", "Red Bus"
+
+    // ── Bus-specific fields ─────────────────────────────────────────────
+    busStop: v.optional(v.string()),
+    walkPermission: v.optional(v.boolean()),
 
     // ── Camper notes (text drives the flag) ─────────────────────────────
     camperNotes: v.optional(v.string()),
 
     // ── Photo ────────────────────────────────────────────────────────────
     photoUrl: v.optional(v.string()),
+
+    // ── Active status ─────────────────────────────────────────────────────
+    isActive: v.optional(v.boolean()),
 
     // ── Live daily state (reset each morning via clearDailyState) ────────
     // These fields represent what has actually happened today.
@@ -315,4 +322,86 @@ export default defineSchema({
   })
     .index("by_camper_date", ["camperId", "date"])
     .index("by_date",        ["date"]),
+
+  // ── Permanent camp structure ─────────────────────────────────────────────
+  // Admin-managed hierarchy: Camp → Division → Bunk.
+  // Exists independently of camper uploads.
+  campStructure: defineTable({
+    camp: v.string(),
+    division: v.string(),
+    bunk: v.string(),
+    displayName: v.optional(v.string()),
+    sortOrder: v.optional(v.number()),
+    isActive: v.optional(v.boolean()),
+    defaultLocation: v.optional(v.string()),
+    dismissalLocation: v.optional(v.string()),
+    assignedStaff: v.optional(v.array(v.string())),
+  })
+    .index("by_camp", ["camp"])
+    .index("by_bunk", ["bunk"])
+    .index("by_camp_division", ["camp", "division"]),
+
+  // ── Staff assignments (many-per-staff) ───────────────────────────────────
+  staffAssignments: defineTable({
+    staffId: v.id("staff"),
+    type: v.union(
+      v.literal("bunk"),
+      v.literal("period"),
+      v.literal("lunch"),
+      v.literal("dismissal"),
+      v.literal("bus"),
+      v.literal("beforecare"),
+      v.literal("aftercare"),
+    ),
+    camp: v.optional(v.string()),
+    division: v.optional(v.string()),
+    bunk: v.optional(v.string()),
+    period: v.optional(v.string()),
+    className: v.optional(v.string()),
+    busRoute: v.optional(v.string()),
+    dismissalRole: v.optional(v.string()),
+    isActive: v.optional(v.boolean()),
+  })
+    .index("by_staff", ["staffId"])
+    .index("by_type", ["type"])
+    .index("by_bunk", ["bunk"])
+    .index("by_period_class", ["period", "className"]),
+
+  // ── Period schedules (camper → period/class) ─────────────────────────────
+  periodSchedules: defineTable({
+    camperId: v.id("campers"),
+    period: v.string(),
+    className: v.string(),
+    room: v.optional(v.string()),
+  })
+    .index("by_camper", ["camperId"])
+    .index("by_period_class", ["period", "className"]),
+
+  // ── Lunch records (daily, created from weekly upload) ─────────────────────
+  lunchRecords: defineTable({
+    camperId: v.id("campers"),
+    weekStartDate: v.string(),
+    date: v.string(),
+    lunchType: v.union(v.literal("regular"), v.literal("alternate")),
+    pickedUp: v.optional(v.boolean()),
+    pickedUpAt: v.optional(v.number()),
+    pickedUpByStaffId: v.optional(v.string()),
+    note: v.optional(v.string()),
+  })
+    .index("by_date", ["date"])
+    .index("by_camper_date", ["camperId", "date"])
+    .index("by_week", ["weekStartDate"]),
+
+  // ── Period attendance records (daily check-in per period/class) ──────────
+  periodAttendanceRecords: defineTable({
+    camperId: v.id("campers"),
+    date: v.string(),
+    period: v.string(),
+    className: v.string(),
+    checkedIn: v.optional(v.boolean()),
+    checkedInAt: v.optional(v.number()),
+    checkedInByStaffId: v.optional(v.string()),
+  })
+    .index("by_camper_date", ["camperId", "date"])
+    .index("by_period_class_date", ["period", "className", "date"]),
 });

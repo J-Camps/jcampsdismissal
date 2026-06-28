@@ -9,10 +9,15 @@
  */
 
 import type * as attendanceLogs from "../attendanceLogs.js";
+import type * as campStructure from "../campStructure.js";
 import type * as campers from "../campers.js";
 import type * as dailyOverrides from "../dailyOverrides.js";
 import type * as exceptions from "../exceptions.js";
+import type * as lunchRecords from "../lunchRecords.js";
+import type * as periodAttendance from "../periodAttendance.js";
+import type * as periodSchedules from "../periodSchedules.js";
 import type * as staff from "../staff.js";
+import type * as staffAssignments from "../staffAssignments.js";
 
 import type {
   ApiFromModules,
@@ -22,10 +27,15 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   attendanceLogs: typeof attendanceLogs;
+  campStructure: typeof campStructure;
   campers: typeof campers;
   dailyOverrides: typeof dailyOverrides;
   exceptions: typeof exceptions;
+  lunchRecords: typeof lunchRecords;
+  periodAttendance: typeof periodAttendance;
+  periodSchedules: typeof periodSchedules;
   staff: typeof staff;
+  staffAssignments: typeof staffAssignments;
 }>;
 
 /**

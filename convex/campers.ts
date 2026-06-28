@@ -51,6 +51,20 @@ export const getBunkRoster = query({
   },
 });
 
+export const getBusRoutes = query({
+  args: {},
+  handler: async (ctx) => {
+    const all = await ctx.db.query("campers").collect();
+    const routes = new Set<string>();
+    for (const c of all) {
+      if (c.arrivalMethod?.toLowerCase().includes("bus")) routes.add(c.arrivalMethod);
+      if (c.dismissalMethod?.toLowerCase().includes("bus")) routes.add(c.dismissalMethod);
+      if (c.busRoute) routes.add(c.busRoute);
+    }
+    return [...routes].sort();
+  },
+});
+
 export const getBunks = query({
   args: {},
   handler: async (ctx) => {
@@ -135,6 +149,8 @@ export const create = mutation({
     dismissalMethod: v.optional(v.string()),
     camperNotes: v.optional(v.string()),
     periodGroups: v.optional(v.record(v.string(), v.string())),
+    busStop: v.optional(v.string()),
+    walkPermission: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("campers", {
@@ -572,7 +588,11 @@ export const setPeriodAttendance = mutation({
 export const setCheckpoint = mutation({
   args: {
     id: v.id("campers"),
-    checkpoint: v.union(v.literal("BeforeCare"), v.literal("AfterCare"), v.literal("Lunch"), v.literal("Bus")),
+    checkpoint: v.union(
+      v.literal("BeforeCare"), v.literal("AfterCare"), v.literal("Lunch"), v.literal("Bus"),
+      v.literal("MorningBusIn"), v.literal("MorningBusRoom"),
+      v.literal("AfternoonBusRoomIn"), v.literal("AfternoonBusOnBoard"), v.literal("AfternoonBusAtStop"),
+    ),
     value: v.boolean(),
     staffName: v.string(),
     label: v.optional(v.string()), // optional human-friendly group name, e.g. "Bus 3"
@@ -613,5 +633,136 @@ export const setCheckpoint = mutation({
       staffName,
       timestamp: Date.now(),
     });
+  },
+});
+
+// ─── Admin Camper Management ────────────────────────────────────────────────
+
+export const deactivate = mutation({
+  args: { id: v.id("campers"), staffName: v.string() },
+  handler: async (ctx, { id, staffName }) => {
+    await ctx.db.patch(id, { isActive: false });
+    await ctx.db.insert("attendanceLogs", {
+      camperId: id, date: today(), checkpoint: "BunkConfirm",
+      status: "Deactivated", staffName, timestamp: Date.now(),
+    });
+  },
+});
+
+export const reactivate = mutation({
+  args: { id: v.id("campers"), staffName: v.string() },
+  handler: async (ctx, { id, staffName }) => {
+    await ctx.db.patch(id, { isActive: true });
+    await ctx.db.insert("attendanceLogs", {
+      camperId: id, date: today(), checkpoint: "BunkConfirm",
+      status: "Reactivated", staffName, timestamp: Date.now(),
+    });
+  },
+});
+
+export const adminUpdate = mutation({
+  args: {
+    id: v.id("campers"),
+    staffName: v.string(),
+    preferredName: v.optional(v.string()),
+    lastName: v.optional(v.string()),
+    bunk: v.optional(v.string()),
+    camp: v.optional(v.string()),
+    campDivision: v.optional(v.string()),
+    code: v.optional(v.string()),
+    grade: v.optional(v.string()),
+    arrivalMethod: v.optional(v.string()),
+    dismissalMethod: v.optional(v.string()),
+    photoUrl: v.optional(v.string()),
+    allergyDetails: v.optional(v.string()),
+    camperNotes: v.optional(v.string()),
+    lunchInfo: v.optional(v.string()),
+    periodGroups: v.optional(v.record(v.string(), v.string())),
+    isActive: v.optional(v.boolean()),
+    busStop: v.optional(v.string()),
+    walkPermission: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { id, staffName, allergyDetails, camperNotes, preferredName, ...fields }) => {
+    const camper = await ctx.db.get(id);
+    if (!camper) return;
+
+    const patch: Record<string, unknown> = { ...fields };
+
+    if (preferredName !== undefined) {
+      patch.preferredName = preferredName;
+      patch.name = preferredName;
+    }
+    if (allergyDetails !== undefined) {
+      patch.allergyDetails = allergyDetails.trim() || undefined;
+      patch.hasAllergies = !!allergyDetails.trim();
+    }
+    if (camperNotes !== undefined) {
+      patch.camperNotes = camperNotes.trim() || undefined;
+      patch.hasNotes = !!camperNotes.trim();
+    }
+
+    const changes: string[] = [];
+    for (const [key, val] of Object.entries(patch)) {
+      const old = (camper as Record<string, unknown>)[key];
+      if (old !== val) changes.push(`${key}: ${JSON.stringify(old)} → ${JSON.stringify(val)}`);
+    }
+
+    if (changes.length === 0) return;
+
+    await ctx.db.patch(id, patch);
+    await ctx.db.insert("attendanceLogs", {
+      camperId: id, date: today(), checkpoint: "BunkConfirm",
+      status: `Admin update: ${changes.join(", ")}`, staffName, timestamp: Date.now(),
+    });
+  },
+});
+
+export const adminCreate = mutation({
+  args: {
+    preferredName: v.string(),
+    lastName: v.optional(v.string()),
+    bunk: v.string(),
+    code: v.string(),
+    camp: v.optional(v.string()),
+    campDivision: v.optional(v.string()),
+    grade: v.optional(v.string()),
+    arrivalMethod: v.optional(v.string()),
+    dismissalMethod: v.optional(v.string()),
+    photoUrl: v.optional(v.string()),
+    allergyDetails: v.optional(v.string()),
+    camperNotes: v.optional(v.string()),
+    lunchInfo: v.optional(v.string()),
+    busStop: v.optional(v.string()),
+    walkPermission: v.optional(v.boolean()),
+    staffName: v.string(),
+  },
+  handler: async (ctx, { staffName, allergyDetails, camperNotes, ...args }) => {
+    const id = await ctx.db.insert("campers", {
+      ...args,
+      name: args.preferredName,
+      status: "Waiting",
+      isActive: true,
+      hasAllergies: !!(allergyDetails?.trim()),
+      allergyDetails: allergyDetails?.trim() || undefined,
+      hasNotes: !!(camperNotes?.trim()),
+      camperNotes: camperNotes?.trim() || undefined,
+    });
+    await ctx.db.insert("attendanceLogs", {
+      camperId: id, date: today(), checkpoint: "BunkConfirm",
+      status: "Created by admin", staffName, timestamp: Date.now(),
+    });
+    return id;
+  },
+});
+
+export const adminDelete = mutation({
+  args: { id: v.id("campers"), staffName: v.string() },
+  handler: async (ctx, { id }) => {
+    const logs = await ctx.db
+      .query("attendanceLogs")
+      .withIndex("by_camper_date", q => q.eq("camperId", id))
+      .first();
+    if (logs) throw new Error("Cannot permanently delete a camper with attendance history. Deactivate instead.");
+    await ctx.db.delete(id);
   },
 });
