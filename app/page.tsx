@@ -1391,6 +1391,7 @@ function CounselorBunkView({ staff, bunk }: {
   const setNotArrived = useMutation(api.campers.unconfirmWithBunk);
   const setOut        = useMutation(api.campers.markLeftEarly);
   const setNotOut     = useMutation(api.campers.undoLeftEarly);
+  const todayLunchRecords = useQuery(api.lunchRecords.getForDate, { date: today() });
   const [selected,  setSelected]  = useState<CamperDoc | null>(null);
   const [groupBy, setGroupBy] = useState<BunkGroupKey>("none");
 
@@ -1506,6 +1507,7 @@ function CounselorBunkView({ staff, bunk }: {
               {groupItems.map(({ c, isAbsent, arrived, dismissed }) => (
                 <BunkCamperRow key={c._id} camper={c} isAbsent={isAbsent} arrived={arrived} dismissed={dismissed}
                   override={overrideMap.get(c._id)}
+                  lunchRecord={(todayLunchRecords ?? []).find(r => r.camperId === c._id)}
                   onOpenProfile={() => setSelected(c)}
                   onToggleAM={() => toggleAM(c)}
                   onToggleOut={() => toggleOut(c)}
@@ -1522,12 +1524,13 @@ function CounselorBunkView({ staff, bunk }: {
 }
 
 // One roster row: identity + transport/flags inline, plus In / Out tap targets.
-function BunkCamperRow({ camper, isAbsent, arrived, dismissed, override, onOpenProfile, onToggleAM, onToggleOut }: {
+function BunkCamperRow({ camper, isAbsent, arrived, dismissed, override, lunchRecord, onOpenProfile, onToggleAM, onToggleOut }: {
   camper: CamperDoc;
   isAbsent: boolean;
   arrived: boolean;
   dismissed: boolean;
   override?: { isAbsent?: boolean; lateDropoffTime?: string; earlyPickupTime?: string; morningArrival?: string; afternoonDismissal?: string; note?: string };
+  lunchRecord?: { lunchType: "regular" | "alternate"; pickedUp?: boolean };
   onOpenProfile: () => void;
   onToggleAM: () => void;
   onToggleOut: () => void;
@@ -1581,6 +1584,14 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, override, onOpenP
             )}
             {isCalled && <StatusBadge status={camper.status} />}
           </div>
+          {lunchRecord && (
+            <div className="flex items-center gap-1 mt-1">
+              <UtensilsCrossed size={11} className={lunchRecord.pickedUp ? "text-green-500" : "text-amber-500"} />
+              <span className={`text-[10px] font-semibold ${lunchRecord.pickedUp ? "text-green-600" : "text-amber-600"}`}>
+                {lunchRecord.lunchType === "alternate" ? "Alt lunch" : "Lunch"}{lunchRecord.pickedUp ? " — Picked up ✓" : " — Not picked up"}
+              </span>
+            </div>
+          )}
         </div>
         <ArrowRight size={16} className="text-slate-300 flex-shrink-0" />
       </button>
@@ -2166,7 +2177,7 @@ const BUS_CHECKPOINTS = [
   { key: "AfternoonBusAtStop",  label: "Stop", phase: "PM" },
 ] as const;
 
-const BUS_COLORS: Record<string, { bg: string; text: string; light: string; border: string }> = {
+const BUS_COLORS_STATIC: Record<string, { bg: string; text: string; light: string; border: string }> = {
   "Blue Bus":   { bg: "#2563eb", text: "#fff",    light: "#dbeafe", border: "#93c5fd" },
   "Red Bus":    { bg: "#dc2626", text: "#fff",    light: "#fee2e2", border: "#fca5a5" },
   "Green Bus":  { bg: "#16a34a", text: "#fff",    light: "#dcfce7", border: "#86efac" },
@@ -2174,19 +2185,34 @@ const BUS_COLORS: Record<string, { bg: string; text: string; light: string; bord
   "Orange Bus": { bg: "#ea580c", text: "#fff",    light: "#ffedd5", border: "#fdba74" },
   "Purple Bus": { bg: "#7c3aed", text: "#fff",    light: "#ede9fe", border: "#c4b5fd" },
 };
-const getBusColor = (route: string) => BUS_COLORS[route] ?? { bg: "#023B64", text: "#fff", light: "#e0f2fe", border: "#93c5fd" };
+const DEFAULT_BUS_COLOR = { bg: "#023B64", text: "#fff", light: "#e0f2fe", border: "#93c5fd" };
+
+function getBusColorFromRoutes(route: string, busRouteRecords?: Doc<"busRoutes">[]): { bg: string; text: string; light: string; border: string } {
+  if (busRouteRecords) {
+    const rec = busRouteRecords.find(r => r.name === route);
+    if (rec?.colorHex) return { bg: rec.colorHex, text: "#fff", light: rec.colorLight ?? "#e0f2fe", border: rec.colorBorder ?? "#93c5fd" };
+  }
+  return BUS_COLORS_STATIC[route] ?? DEFAULT_BUS_COLOR;
+}
 
 function busCpCount(campers: CamperDoc[], key: string) {
   return campers.filter(c => c.dailyCheckpoints?.[key]).length;
 }
 
 function BusView({ staff }: { staff: StaffDoc }) {
-  const busRoutes  = useQuery(api.campers.getBusRoutes);
+  const busRouteRecords = useQuery(api.busRoutes.list);
+  const busRoutesFromCampers = useQuery(api.campers.getBusRoutes);
   const allCampers = useQuery(api.campers.list);
   const overrides  = useQuery(api.dailyOverrides.getForDate, {});
   const setCheckpoint = useMutation(api.campers.setCheckpoint);
-  const routes     = busRoutes && busRoutes.length > 0 ? busRoutes : BUS_ROUTES_FALLBACK;
-  const [view, setView] = useState<"all" | string>("all");
+  const isAdmin = [staff.role, ...(staff.extraRoles ?? [])].some(r => r === "admin" || r === "director");
+  const allRouteNames = busRouteRecords && busRouteRecords.length > 0
+    ? busRouteRecords.filter(r => r.isActive !== false).sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99)).map(r => r.name)
+    : busRoutesFromCampers && busRoutesFromCampers.length > 0 ? busRoutesFromCampers : BUS_ROUTES_FALLBACK;
+  const staffBusRoute = staff.busRoute;
+  const routes = isAdmin ? allRouteNames : staffBusRoute ? allRouteNames.filter(r => r === staffBusRoute) : allRouteNames;
+  const getBusColor = (route: string) => getBusColorFromRoutes(route, busRouteRecords ?? undefined);
+  const [view, setView] = useState<"all" | string>(isAdmin ? "all" : staffBusRoute ?? "all");
   const [selected, setSelected] = useState<CamperDoc | null>(null);
   const [search, setSearch] = useState("");
   const [groupByStop, setGroupByStop] = useState(false);
@@ -4353,8 +4379,8 @@ function LunchManagement() {
                       const isToday = day.date === todayStr;
                       const isAlt = rec.lunchType === "alternate";
                       return (
-                        <button key={day.date} onClick={() => isToday ? markPickedUp({ id: rec._id, pickedUp: !rec.pickedUp, staffId: "Admin" }) : undefined}
-                          className={`flex-1 rounded-lg py-1.5 text-center transition-colors ${isToday ? "cursor-pointer" : "cursor-default"} ${
+                        <button key={day.date} onClick={() => markPickedUp({ id: rec._id, pickedUp: !rec.pickedUp, staffId: "Admin" })}
+                          className={`flex-1 rounded-lg py-1.5 text-center transition-colors cursor-pointer active:opacity-80 ${
                             rec.pickedUp ? "bg-green-500 text-white"
                             : isAlt ? "bg-amber-50 border border-amber-200"
                             : "bg-slate-50 border border-slate-200"
@@ -4750,6 +4776,7 @@ function StaffManagement() {
   const staffList = useQuery(api.staff.list);
   const bunkList  = useQuery(api.campers.getBunks, {});
   const structureBunks = useQuery(api.campStructure.list);
+  const busRouteList = useQuery(api.busRoutes.list);
   const createStaff = useMutation(api.staff.create);
   const updateStaff = useMutation(api.staff.update);
   const removeStaff = useMutation(api.staff.remove);
@@ -5166,7 +5193,15 @@ function StaffManagement() {
                     {s.bunkAssignment && <span className="text-xs text-slate-500">{s.bunkAssignment}</span>}
                     {(s as unknown as { camp?: string }).camp ? <span className="text-xs text-slate-500">{(s as unknown as { camp: string }).camp}</span> : null}
                     {(s as unknown as { primaryJob?: string }).primaryJob ? <span className="text-[10px] font-semibold text-slate-500 bg-slate-50 px-1.5 py-0.5 rounded-full">{(s as unknown as { primaryJob: string }).primaryJob}</span> : null}
-                    {s.busRoute && <span className="text-xs text-slate-500">{s.busRoute}</span>}
+                    {s.busRoute && (() => {
+                      const br = (busRouteList ?? []).find(r => r.name === s.busRoute);
+                      return (
+                        <span className="text-xs font-semibold flex items-center gap-1">
+                          {br?.colorHex && <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: br.colorHex }} />}
+                          <span style={{ color: br?.colorHex ?? "#64748b" }}>{s.busRoute}</span>
+                        </span>
+                      );
+                    })()}
                     {s.canBeRunner && <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Runner</span>}
                   </div>
                 </div>
@@ -5354,8 +5389,21 @@ function StaffManagement() {
                   <select value={form.busRoute} onChange={e => setForm({ ...form, busRoute: e.target.value })}
                     className={`${inp} bg-white`}>
                     <option value="">Select bus route…</option>
-                    {BUS_ROUTES_FALLBACK.map(r => <option key={r} value={r}>{r}</option>)}
+                    {(busRouteList ?? []).filter(r => r.isActive !== false).sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99)).map(r => (
+                      <option key={r._id} value={r.name}>{r.name}{r.color ? ` (${r.color})` : ""}{r.isActive === false ? " — Inactive" : ""}</option>
+                    ))}
                   </select>
+                  {form.busRoute && (() => {
+                    const br = (busRouteList ?? []).find(r => r.name === form.busRoute);
+                    if (!br) return null;
+                    return (
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <div className="w-4 h-4 rounded-full" style={{ backgroundColor: br.colorHex ?? "#023B64" }} />
+                        <span className="text-xs text-slate-500">{br.color ?? br.name}</span>
+                        {br.isActive === false && <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Inactive route</span>}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 

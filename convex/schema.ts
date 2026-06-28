@@ -341,6 +341,22 @@ export default defineSchema({
     .index("by_bunk", ["bunk"])
     .index("by_camp_division", ["camp", "division"]),
 
+  // ── Bus routes (source of truth for transport) ───────────────────────────
+  busRoutes: defineTable({
+    name: v.string(),
+    routeNumber: v.optional(v.number()),
+    color: v.optional(v.string()),
+    colorHex: v.optional(v.string()),
+    colorLight: v.optional(v.string()),
+    colorBorder: v.optional(v.string()),
+    isActive: v.optional(v.boolean()),
+    sortOrder: v.optional(v.number()),
+    notes: v.optional(v.string()),
+    createdAt: v.optional(v.number()),
+    updatedAt: v.optional(v.number()),
+  })
+    .index("by_name", ["name"]),
+
   // ── Staff assignments (many-per-staff) ───────────────────────────────────
   staffAssignments: defineTable({
     staffId: v.id("staff"),
@@ -359,6 +375,7 @@ export default defineSchema({
     period: v.optional(v.string()),
     className: v.optional(v.string()),
     busRoute: v.optional(v.string()),
+    busRouteId: v.optional(v.id("busRoutes")),
     dismissalRole: v.optional(v.string()),
     isActive: v.optional(v.boolean()),
   })
