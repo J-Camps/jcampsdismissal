@@ -587,22 +587,30 @@ function CamperDashboardRow({ row, onClick }: { row: CamperRow; onClick: () => v
 }
 
 // Hierarchy grouping options for the Dashboard
-type DashGroupBy = "camp" | "bunk" | "grade";
+type DashGroupBy = "camp" | "division" | "bunk" | "grade";
 const DASH_GROUP_OPTIONS: { id: DashGroupBy; label: string }[] = [
-  { id: "camp",  label: "Camp → Group" },
-  { id: "bunk",  label: "Group" },
-  { id: "grade", label: "Grade" },
+  { id: "camp",     label: "Camp → Group" },
+  { id: "division", label: "Camp → Division" },
+  { id: "bunk",     label: "Group" },
+  { id: "grade",    label: "Grade" },
 ];
 
-function groupKeysFor(c: CamperDoc, groupBy: DashGroupBy): [string, string] {
-  // Returns [topLevelKey, subLevelKey]
+const DIVISION_CAMPS = new Set(["Kaleidoscope"]);
+
+function groupKeysFor(c: CamperDoc, groupBy: DashGroupBy, structureMap?: Map<string, { camp: string; division: string }>): [string, string] {
   const camp  = c.camp?.trim() || "Unassigned Camp";
   const bunk  = c.bunk?.trim() || "No Group";
   const grade = c.grade?.trim() || "No Grade";
+  const struct = structureMap?.get(bunk);
+  const resolvedCamp = struct?.camp ?? camp;
+  const division = struct?.division ?? c.campDivision?.trim() ?? "Unassigned";
   switch (groupBy) {
-    case "camp":  return [camp, bunk];
-    case "bunk":  return [bunk, ""];
-    case "grade": return [grade, bunk];
+    case "camp":
+      if (DIVISION_CAMPS.has(resolvedCamp)) return [resolvedCamp, `${division}::${bunk}`];
+      return [resolvedCamp, bunk];
+    case "division": return [resolvedCamp, division];
+    case "bunk":     return [bunk, ""];
+    case "grade":    return [grade, bunk];
   }
 }
 
@@ -646,30 +654,62 @@ function CamperDashboard({ staff }: { staff: StaffDoc }) {
   // When actively searching/filtering, auto-expand everything so matches are visible.
   const autoExpand = q.length > 0 || statusFilter !== "all";
 
+  // Build structure lookup: bunk → { camp, division }
+  const structureMap = new Map<string, { camp: string; division: string }>();
+  for (const s of campStructure ?? []) {
+    if (s.isActive !== false) structureMap.set(s.bunk, { camp: s.camp, division: s.division });
+  }
+
   // Build hierarchy: top → sub → rows
   const hasSubLevel = groupBy !== "bunk";
   const hierarchy = new Map<string, Map<string, CamperRow[]>>();
+
+  // Seed from camp structure first so all bunks/divisions appear even if empty
+  if (campStructure && campStructure.length > 0 && !q && statusFilter === "all") {
+    for (const s of campStructure) {
+      if (s.isActive === false) continue;
+      if (s.camp === "Unassigned" || s.division === "Unassigned") continue;
+      let top: string, sub: string;
+      switch (groupBy) {
+        case "camp":
+          top = s.camp;
+          sub = DIVISION_CAMPS.has(s.camp) ? `${s.division}::${s.bunk}` : s.bunk;
+          break;
+        case "division": top = s.camp; sub = s.division; break;
+        case "bunk":     top = s.bunk; sub = ""; break;
+        case "grade":    continue;
+      }
+      if (!hierarchy.has(top)) hierarchy.set(top, new Map());
+      const subKey = hasSubLevel ? sub : "";
+      if (!hierarchy.get(top)!.has(subKey)) hierarchy.get(top)!.set(subKey, []);
+    }
+  }
+
+  // Add campers into the hierarchy
   for (const r of filtered) {
-    const [top, sub] = groupKeysFor(r.camper, groupBy);
+    const [top, sub] = groupKeysFor(r.camper, groupBy, structureMap);
     if (!hierarchy.has(top)) hierarchy.set(top, new Map());
     const subMap = hierarchy.get(top)!;
     const subKey = hasSubLevel ? sub : "";
     if (!subMap.has(subKey)) subMap.set(subKey, []);
     subMap.get(subKey)!.push(r);
   }
-  if (campStructure && campStructure.length > 0 && !q && statusFilter === "all") {
-    for (const s of campStructure) {
-      if (s.isActive === false) continue;
-      const top = groupBy === "camp" ? s.camp : groupBy === "bunk" ? s.bunk : "No Grade";
-      const sub = groupBy === "camp" ? s.bunk : "";
-      if (!hierarchy.has(top)) hierarchy.set(top, new Map());
-      const subMap = hierarchy.get(top)!;
-      const subKey = hasSubLevel ? sub : "";
-      if (!subMap.has(subKey)) subMap.set(subKey, []);
+
+  // Sort: structure-defined camps first (by sort order), then alphabetical
+  const structureCampOrder = new Map<string, number>();
+  for (const s of campStructure ?? []) {
+    if (s.isActive === false) continue;
+    const existing = structureCampOrder.get(s.camp);
+    if (existing === undefined || (s.sortOrder ?? 999) < existing) {
+      structureCampOrder.set(s.camp, s.sortOrder ?? 999);
     }
   }
-
-  const topKeys = [...hierarchy.keys()].sort((a, b) => a.localeCompare(b));
+  const topKeys = [...hierarchy.keys()].sort((a, b) => {
+    const oa = structureCampOrder.get(a) ?? 9999;
+    const ob = structureCampOrder.get(b) ?? 9999;
+    if (oa !== ob) return oa - ob;
+    return a.localeCompare(b);
+  });
 
   const toggleStatus = (s: "Here" | "NotHere") =>
     setStatusFilter(prev => prev === s ? "all" : s);
@@ -683,7 +723,14 @@ function CamperDashboard({ staff }: { staff: StaffDoc }) {
     const subs = new Set<string>();
     for (const [top, subMap] of hierarchy) {
       tops.add(top);
-      for (const sub of subMap.keys()) subs.add(`${top}//${sub}`);
+      for (const sub of subMap.keys()) {
+        subs.add(`${top}//${sub}`);
+        if (DIVISION_CAMPS.has(top) && groupBy === "camp" && sub.includes("::")) {
+          const div = sub.split("::")[0];
+          subs.add(`${top}//${div}`);
+          subs.add(`${top}//${div}//${sub.split("::")[1]}`);
+        }
+      }
     }
     setExpandedTop(tops); setExpandedSub(subs);
   };
@@ -800,32 +847,89 @@ function CamperDashboard({ staff }: { staff: StaffDoc }) {
                         ))}
                       </div>
                     )
-                    : subKeys.map(sub => {
-                      const subRows = subMap.get(sub)!;
-                      const sc = countsFor(subRows);
-                      const subId = `${top}//${sub}`;
-                      const subOpen = autoExpand || expandedSub.has(subId);
-                      return (
-                        <div key={subId} className="border-b border-slate-100 last:border-b-0">
-                          <button onClick={() => toggleSub(subId)}
-                            className="w-full flex items-center gap-2 pl-9 pr-4 py-2.5 text-left active:bg-slate-50">
-                            {subOpen ? <ChevronDown size={15} className="text-slate-300 flex-shrink-0" />
-                                     : <ChevronRight size={15} className="text-slate-300 flex-shrink-0" />}
-                            <span className="text-sm font-semibold text-slate-600 flex-1 min-w-0 truncate">{sub}</span>
-                            <span className="text-[11px] font-semibold text-green-600">{sc.here}</span>
-                            <span className="text-[11px] text-slate-300">/</span>
-                            <span className="text-[11px] font-semibold text-slate-400">{sc.total}</span>
-                          </button>
-                          {subOpen && (
-                            <div className="px-2.5 pb-2.5 space-y-2 bg-slate-50/50">
-                              {subRows.map(row => (
-                                <CamperDashboardRow key={row.camper._id} row={row} onClick={() => setSelectedCamper(row.camper)} />
-                              ))}
+                    : (() => {
+                      const isDivisionCamp = DIVISION_CAMPS.has(top) && groupBy === "camp";
+                      if (isDivisionCamp) {
+                        const divGroups = new Map<string, { bunk: string; rows: CamperRow[] }[]>();
+                        for (const sub of subKeys) {
+                          const parts = sub.split("::");
+                          const div = parts[0] ?? "Unassigned";
+                          const bunk = parts[1] ?? sub;
+                          if (!divGroups.has(div)) divGroups.set(div, []);
+                          divGroups.get(div)!.push({ bunk, rows: subMap.get(sub)! });
+                        }
+                        return [...divGroups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([div, bunks]) => {
+                          const divRows = bunks.flatMap(b => b.rows);
+                          const dc = countsFor(divRows);
+                          const divId = `${top}//${div}`;
+                          const divOpen = autoExpand || expandedSub.has(divId);
+                          return (
+                            <div key={divId} className="border-b border-slate-100 last:border-b-0">
+                              <button onClick={() => toggleSub(divId)}
+                                className="w-full flex items-center gap-2 pl-9 pr-4 py-2.5 text-left active:bg-slate-50">
+                                {divOpen ? <ChevronDown size={15} className="text-slate-300 flex-shrink-0" />
+                                         : <ChevronRight size={15} className="text-slate-300 flex-shrink-0" />}
+                                <span className="text-sm font-bold text-slate-700 flex-1 min-w-0 truncate">{div}</span>
+                                <span className="text-[11px] font-semibold text-green-600">{dc.here}</span>
+                                <span className="text-[11px] text-slate-300">/</span>
+                                <span className="text-[11px] font-semibold text-slate-400">{dc.total}</span>
+                              </button>
+                              {divOpen && bunks.sort((a, b) => a.bunk.localeCompare(b.bunk)).map(({ bunk, rows: bunkRows }) => {
+                                const bc = countsFor(bunkRows);
+                                const bunkId = `${top}//${div}//${bunk}`;
+                                const bunkOpen = autoExpand || expandedSub.has(bunkId);
+                                return (
+                                  <div key={bunkId} className="border-t border-slate-50">
+                                    <button onClick={() => toggleSub(bunkId)}
+                                      className="w-full flex items-center gap-2 pl-14 pr-4 py-2 text-left active:bg-slate-50">
+                                      {bunkOpen ? <ChevronDown size={13} className="text-slate-200 flex-shrink-0" />
+                                               : <ChevronRight size={13} className="text-slate-200 flex-shrink-0" />}
+                                      <span className="text-xs font-semibold text-slate-500 flex-1 min-w-0 truncate">{bunk}</span>
+                                      <span className="text-[10px] font-semibold text-green-600">{bc.here}</span>
+                                      <span className="text-[10px] text-slate-300">/</span>
+                                      <span className="text-[10px] font-semibold text-slate-400">{bc.total}</span>
+                                    </button>
+                                    {bunkOpen && (
+                                      <div className="px-2.5 pb-2 space-y-2 bg-slate-50/50">
+                                        {bunkRows.map(row => (
+                                          <CamperDashboardRow key={row.camper._id} row={row} onClick={() => setSelectedCamper(row.camper)} />
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                          );
+                        });
+                      }
+                      return subKeys.map(sub => {
+                        const subRows = subMap.get(sub)!;
+                        const sc = countsFor(subRows);
+                        const subId = `${top}//${sub}`;
+                        const subOpen = autoExpand || expandedSub.has(subId);
+                        return (
+                          <div key={subId} className="border-b border-slate-100 last:border-b-0">
+                            <button onClick={() => toggleSub(subId)}
+                              className="w-full flex items-center gap-2 pl-9 pr-4 py-2.5 text-left active:bg-slate-50">
+                              {subOpen ? <ChevronDown size={15} className="text-slate-300 flex-shrink-0" />
+                                       : <ChevronRight size={15} className="text-slate-300 flex-shrink-0" />}
+                              <span className="text-sm font-semibold text-slate-600 flex-1 min-w-0 truncate">{sub}</span>
+                              <span className="text-[11px] font-semibold text-green-600">{sc.here}</span>
+                              <span className="text-[11px] text-slate-300">/</span>
+                              <span className="text-[11px] font-semibold text-slate-400">{sc.total}</span>
+                            </button>
+                            {subOpen && (
+                              <div className="px-2.5 pb-2.5 space-y-2 bg-slate-50/50">
+                                {subRows.map(row => (
+                                  <CamperDashboardRow key={row.camper._id} row={row} onClick={() => setSelectedCamper(row.camper)} />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      });
+                    })()}
                 </div>
               )}
             </div>
@@ -4526,9 +4630,15 @@ function StaffManagement() {
           runnerLabel: staffMapping.runnerLabel ? (row[staffMapping.runnerLabel]?.trim() || undefined) : undefined,
           isActive: staffMapping.isActive ? parseBoolVal(row[staffMapping.isActive] ?? "true") : true,
         };
-        const existing = email ? staffList?.find(s => s.email && s.email === email) : undefined;
-        if (existing) { await updateStaff({ id: existing._id, ...args }); updated++; }
-        else { await createStaff(args); created++; }
+        const nameKey = `${fn} ${ln}`.trim().toLowerCase();
+        const existing = staffList?.find(s => s.code === code)
+          ?? (email ? staffList?.find(s => s.email && s.email === email) : undefined)
+          ?? staffList?.find(s => s.name.toLowerCase() === nameKey)
+          ?? staffList?.find(s => (s.firstName ?? "").toLowerCase() === fn.toLowerCase() && (s.lastName ?? "").toLowerCase() === ln.toLowerCase());
+        try {
+          if (existing) { await updateStaff({ id: existing._id, ...args }); updated++; }
+          else { await createStaff(args); created++; }
+        } catch (e: unknown) { errors.push(`Row ${i + 2}: ${e instanceof Error ? e.message : "failed"}`); }
       }
     } catch (e: unknown) { errors.push(e instanceof Error ? e.message : "Upload failed"); }
     setStaffUploadResult({ created, updated, errors });
