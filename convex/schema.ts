@@ -174,6 +174,7 @@ export default defineSchema({
     campSection: v.optional(CAMP_SECTION),
     camp: v.optional(v.string()),         // e.g. "Kaleidoscope", "Swim", "Sports"
     campDivision: v.optional(v.string()), // sub-group within a camp, if applicable
+    track: v.optional(v.string()),        // Middle Camp: the all-day track a camper is in
 
     // ── Safety ──────────────────────────────────────────────────────────
     // `code` is the family pickup/safety code. Visible only to dismissal staff and admin.
@@ -203,8 +204,9 @@ export default defineSchema({
     busStop: v.optional(v.string()),
     walkPermission: v.optional(v.boolean()),
 
-    // ── After Care program ──────────────────────────────────────────────
+    // ── Before / After Care programs ────────────────────────────────────
     afterCareProgram: v.optional(v.string()),
+    beforeCareProgram: v.optional(v.string()),
     isExternal: v.optional(v.boolean()),
 
     // ── Camper notes (text drives the flag) ─────────────────────────────
@@ -255,7 +257,8 @@ export default defineSchema({
     .index("by_status", ["status"])
     .index("by_runner", ["runner"])
     .index("by_bunk", ["bunk"])
-    .index("by_unit", ["unit"]),
+    .index("by_unit", ["unit"])
+    .index("by_track", ["track"]),
 
   // Staff members — each has a unique personal login code
   staff: defineTable({
@@ -482,9 +485,36 @@ export default defineSchema({
     .index("by_period_class_date", ["period", "className", "date"])
     .index("by_class_date", ["periodClassId", "date"]),
 
+  // ── Middle Camp tracks (definitions) ─────────────────────────────────────
+  // A track is an all-day themed group. Each Middle Camp camper is in one track.
+  tracks: defineTable({
+    name: v.string(),
+    normalizedName: v.optional(v.string()),
+    location: v.optional(v.string()),
+    assignedStaffIds: v.optional(v.array(v.string())),
+    isActive: v.optional(v.boolean()),
+    sortOrder: v.optional(v.number()),
+    notes: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  }).index("by_name", ["name"]),
+
+  // ── Track attendance (daily present/absent per camper) ───────────────────
+  trackAttendanceRecords: defineTable({
+    camperId: v.id("campers"),
+    date: v.string(),               // "YYYY-MM-DD"
+    track: v.string(),              // snapshot of track name
+    status: v.union(v.literal("Present"), v.literal("Absent")),
+    markedAt: v.number(),
+    markedByStaffId: v.optional(v.string()),
+  })
+    .index("by_camper_date", ["camperId", "date"])
+    .index("by_track_date", ["track", "date"])
+    .index("by_date", ["date"]),
+
   // ── Upload batches (history) ────────────────────────────────────────────
   uploadBatches: defineTable({
-    type: v.union(v.literal("period"), v.literal("lunch"), v.literal("camper"), v.literal("staff")),
+    type: v.union(v.literal("period"), v.literal("lunch"), v.literal("camper"), v.literal("staff"), v.literal("track")),
     uploadedByStaffId: v.optional(v.string()),
     uploadedAt: v.number(),
     session: v.optional(v.string()),

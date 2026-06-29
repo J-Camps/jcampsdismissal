@@ -16,7 +16,7 @@ export const list = query({
 
 export const create = mutation({
   args: {
-    type: v.union(v.literal("period"), v.literal("lunch"), v.literal("camper"), v.literal("staff")),
+    type: v.union(v.literal("period"), v.literal("lunch"), v.literal("camper"), v.literal("staff"), v.literal("track")),
     uploadedByStaffId: v.optional(v.string()),
     session: v.optional(v.string()),
     mode: v.optional(v.string()),

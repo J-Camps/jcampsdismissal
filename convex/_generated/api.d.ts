@@ -23,6 +23,8 @@ import type * as periodScheduleRecords from "../periodScheduleRecords.js";
 import type * as periodSchedules from "../periodSchedules.js";
 import type * as staff from "../staff.js";
 import type * as staffAssignments from "../staffAssignments.js";
+import type * as trackAttendance from "../trackAttendance.js";
+import type * as tracks from "../tracks.js";
 import type * as uploadBatches from "../uploadBatches.js";
 
 import type {
@@ -47,6 +49,8 @@ declare const fullApi: ApiFromModules<{
   periodSchedules: typeof periodSchedules;
   staff: typeof staff;
   staffAssignments: typeof staffAssignments;
+  trackAttendance: typeof trackAttendance;
+  tracks: typeof tracks;
   uploadBatches: typeof uploadBatches;
 }>;
 

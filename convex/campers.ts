@@ -737,6 +737,7 @@ export const adminCreate = mutation({
     busStop: v.optional(v.string()),
     walkPermission: v.optional(v.boolean()),
     afterCareProgram: v.optional(v.string()),
+    beforeCareProgram: v.optional(v.string()),
     isExternal: v.optional(v.boolean()),
     staffName: v.string(),
   },
