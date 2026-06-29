@@ -2391,7 +2391,7 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
                           <select value={extMapping[field.key] ?? ""} onChange={e => setExtMapping({ ...extMapping, [field.key]: e.target.value })}
                             className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white w-36">
                             <option value="">— skip —</option>
-                            {extCsvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                            {extCsvData.headers.map((h, hi) => <option key={hi} value={h}>{h}</option>)}
                           </select>
                         </div>
                       ))}
@@ -2724,13 +2724,43 @@ function BusView({ staff }: { staff: StaffDoc }) {
 // ─── Specialist View (Upper Camp activity rosters) ───────────────────────────
 
 function SpecialistView({ staff }: { staff: StaffDoc }) {
+  // An activity leader may run Upper Camp period classes and/or Middle Camp tracks.
+  const myClasses = useQuery(api.periodClasses.getForStaff, { staffId: staff._id });
+  const myTracks = useQuery(api.tracks.getForStaff, { staffId: staff._id });
+  const [view, setView] = useState<"classes" | "tracks">("classes");
+
+  if (myClasses === undefined || myTracks === undefined) return <Loading />;
+
+  const hasClasses = myClasses.length > 0;
+  const hasTracks = myTracks.length > 0;
+  const showTracks = hasTracks && (!hasClasses || view === "tracks");
+
+  if (!hasClasses && !hasTracks) {
+    return (
+      <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
+        No classes or tracks assigned. Contact an administrator.
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
-        <Calendar size={22} className="text-slate-700" />
-        <h2 className="text-xl font-bold text-slate-900">My Classes</h2>
+        {showTracks ? <Route size={22} className="text-slate-700" /> : <Calendar size={22} className="text-slate-700" />}
+        <h2 className="text-xl font-bold text-slate-900">{showTracks ? "My Tracks" : "My Classes"}</h2>
       </div>
-      <MyClassesPanel staff={staff} />
+      {hasClasses && hasTracks && (
+        <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5">
+          {([{ id: "classes", label: "Classes" }, { id: "tracks", label: "Tracks" }] as const).map(t => (
+            <button key={t.id} onClick={() => setView(t.id)}
+              className="flex-1 py-2 rounded-xl text-sm font-semibold transition-colors"
+              style={(view === t.id) ? { backgroundColor: "#023B64", color: "#fff" } : { color: "#64748b" }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {showTracks ? <MyTracksPanel staff={staff} /> : <MyClassesPanel staff={staff} />}
     </div>
   );
 }
@@ -4427,7 +4457,7 @@ function PeriodManagement() {
                     onChange={e => setPeriodMapping({ ...periodMapping, [field.key]: e.target.value })}
                     className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white w-40">
                     <option value="">— skip —</option>
-                    {csvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                    {csvData.headers.map((h, hi) => <option key={hi} value={h}>{h}</option>)}
                   </select>
                 </div>
               ))}
@@ -4862,7 +4892,7 @@ function TrackManagement() {
                   <select value={mapping[field.key] ?? ""} onChange={e => setMapping({ ...mapping, [field.key]: e.target.value })}
                     className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white w-40">
                     <option value="">— skip —</option>
-                    {csvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                    {csvData.headers.map((h, hi) => <option key={hi} value={h}>{h}</option>)}
                   </select>
                 </div>
               ))}
@@ -5144,7 +5174,7 @@ function LunchManagement() {
                     onChange={e => setLunchMapping({ ...lunchMapping, [field.key]: e.target.value })}
                     className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white w-40">
                     <option value="">— skip —</option>
-                    {csvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                    {csvData.headers.map((h, hi) => <option key={hi} value={h}>{h}</option>)}
                   </select>
                 </div>
               ))}
@@ -5956,7 +5986,7 @@ function StaffManagement() {
                       onChange={e => setStaffMapping({ ...staffMapping, [field.key]: e.target.value })}
                       className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white w-40">
                       <option value="">— skip —</option>
-                      {staffCsvData.headers.map(h => <option key={h} value={h}>{h}</option>)}
+                      {staffCsvData.headers.map((h, hi) => <option key={hi} value={h}>{h}</option>)}
                     </select>
                   </div>
                 ))}
@@ -6355,7 +6385,17 @@ function parseCsvLine(line: string): string[] {
 function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
   const lines = text.split(/\r?\n/).filter(l => l.trim());
   if (lines.length === 0) return { headers: [], rows: [] };
-  const headers = parseCsvLine(lines[0]).map(h => h.replace(/^"|"$/g, "").trim());
+  // Uniquify headers: blank columns become "Column N", duplicates get a suffix.
+  // Messy exports (e.g. a Google Doc table) often repeat or omit header names,
+  // which would otherwise collide as React keys and clobber row data.
+  const rawHeaders = parseCsvLine(lines[0]).map(h => h.replace(/^"|"$/g, "").trim());
+  const seen = new Map<string, number>();
+  const headers = rawHeaders.map((h, j) => {
+    const base = h || `Column ${j + 1}`;
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    return n === 1 ? base : `${base} (${n})`;
+  });
   const rows: CsvRow[] = [];
   for (let i = 1; i < lines.length; i++) {
     const vals = parseCsvLine(lines[i]);
