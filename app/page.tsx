@@ -66,6 +66,7 @@ const fmt = (ts?: number) =>
 const PERIOD_LABEL: Record<string, string> = {
   Period1: "Period 1", Period2: "Period 2", Period3: "Period 3",
   Period4: "Period 4", Period5: "Period 5", Period6: "Period 6",
+  Period7: "Period 7",
 };
 
 const today = () => new Date().toISOString().split("T")[0];
@@ -1142,6 +1143,9 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName, isAdm
             <AdminCamperEditForm camper={camper} staffName={staffName} onDone={() => setEditing(false)} />
           )}
 
+          {/* Period schedule (view-only) — hidden automatically if camper has none */}
+          {!editing && <CamperPeriodSchedule camper={camper} />}
+
           {/* Dismissal status badge if active */}
           {(camper.status === "Called" || camper.status === "Assigned") && (
             <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3.5 flex items-center gap-3">
@@ -1158,6 +1162,110 @@ function CamperDetailSheet({ camper, onClose, hideCode = false, staffName, isAdm
 
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Camper Period Schedule (view-only) ───────────────────────────────────────
+// Reads ONLY the current period source of truth: periodScheduleRecords (active
+// rows) joined to periodClasses for the room/location. Never touches the legacy
+// camper.periodGroups / camper.periodAttendance / periodSchedules fields.
+// Rendered on the shared camper profile; there is no edit affordance here, so it
+// is inherently view-only for counselors and every other role.
+function CamperPeriodSchedule({ camper }: { camper: CamperDoc }) {
+  const monThu  = useQuery(api.periodScheduleRecords.getActiveForCamper, { camperId: camper._id, dayType: "MonThu" });
+  const friday  = useQuery(api.periodScheduleRecords.getActiveForCamper, { camperId: camper._id, dayType: "Friday" });
+  const classes = useQuery(api.periodClasses.list);
+  // Today's per-period check-ins (current SoT: periodAttendanceRecords).
+  const attendance = useQuery(api.periodAttendance.getForCamperDate, { camperId: camper._id });
+  const [dayType, setDayType] = useState<"MonThu" | "Friday">(currentDayType());
+
+  // Wait for both day schedules before deciding whether to show the section.
+  if (monThu === undefined || friday === undefined) return null;
+
+  const hasMonThu = monThu.length > 0;
+  const hasFriday = friday.length > 0;
+  if (!hasMonThu && !hasFriday) return null; // no period schedule → hide entirely
+
+  // Only offer the Mon–Thu / Friday toggle when the camper genuinely has both.
+  const showToggle = hasMonThu && hasFriday;
+  const activeDayType = showToggle ? dayType : (hasFriday ? "Friday" : "MonThu");
+  const records = activeDayType === "Friday" ? friday : monThu;
+
+  const locationById = new Map<string, string | undefined>();
+  for (const c of classes ?? []) locationById.set(c._id, c.location);
+
+  // Check-ins only make sense for the schedule that matches today's actual day type.
+  const showAttendance = activeDayType === currentDayType();
+  const attByPeriod = new Map<string, NonNullable<typeof attendance>[number]>();
+  for (const a of attendance ?? []) attByPeriod.set(a.period, a);
+
+  const sorted = [...records].sort((a, b) => a.period.localeCompare(b.period));
+
+  return (
+    <div className="space-y-2.5">
+      <div className="flex items-center justify-between">
+        <SectionLabel>Period Schedule</SectionLabel>
+        {showToggle && (
+          <div className="flex bg-slate-100 rounded-lg p-0.5">
+            {([{ id: "MonThu", label: "Mon–Thu" }, { id: "Friday", label: "Fri" }] as const).map(d => (
+              <button
+                key={d.id}
+                onClick={() => setDayType(d.id)}
+                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
+                  activeDayType === d.id ? "bg-white text-[#023B64] shadow-sm" : "text-slate-500"
+                }`}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        {sorted.map(r => {
+          const location = locationById.get(r.periodClassId);
+          const att = attByPeriod.get(r.period);
+          const checkedIn = !!att?.checkedIn;
+          return (
+            <div key={r._id} className="flex items-center gap-3 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-3">
+              <div className="w-10 flex-shrink-0 text-center">
+                <span className="text-sm font-bold text-[#023B64]">
+                  {(PERIOD_LABEL[r.period] ?? r.period).replace("Period ", "P")}
+                </span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-slate-800 text-sm truncate">{r.classNameSnapshot}</p>
+                {location && (
+                  <p className="text-slate-400 text-xs mt-0.5 flex items-center gap-1">
+                    <MapPin size={11} /> {location}
+                  </p>
+                )}
+              </div>
+              {showAttendance && (
+                checkedIn ? (
+                  <div className="flex-shrink-0 flex items-center gap-1 bg-green-100 text-green-700 rounded-full pl-1.5 pr-2.5 py-1">
+                    <CheckCircle2 size={13} />
+                    <span className="text-[11px] font-semibold whitespace-nowrap">
+                      In{att?.checkedInAt ? ` · ${fmt(att.checkedInAt)}` : ""}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex-shrink-0 flex items-center gap-1 bg-slate-100 text-slate-400 rounded-full px-2.5 py-1">
+                    <span className="text-[11px] font-semibold whitespace-nowrap">Not in</span>
+                  </div>
+                )
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="text-[11px] text-slate-400 px-1">
+        {activeDayType === "Friday" ? "Friday schedule" : "Monday–Thursday schedule"}
+        {showAttendance ? " · check-ins for today" : ""} · view only
+      </p>
     </div>
   );
 }
@@ -1991,7 +2099,7 @@ function RosterCheckCard({
 type DailyOverride = { camperId: string; isAbsent?: boolean; lateDropoffTime?: string; earlyPickupTime?: string; morningArrival?: string; afternoonDismissal?: string; note?: string };
 
 function InOutRosterView({
-  campers, checkpoint, staffName, groupLabel, emptyMessage, inLabel, outLabel, overrides, hideSummary,
+  campers, checkpoint, staffName, groupLabel, emptyMessage, inLabel, outLabel, overrides, hideSummary, showCode,
 }: {
   campers: CamperDoc[];
   checkpoint: "BeforeCare" | "AfterCare" | "Bus";
@@ -2002,6 +2110,7 @@ function InOutRosterView({
   outLabel: string;  // e.g. "Left for Bunk" / "Dropped Off"
   overrides?: DailyOverride[];
   hideSummary?: boolean;  // when the parent already renders the summary on top
+  showCode?: boolean;     // reveal the pickup safety code in the profile (After Care)
 }) {
   const setCheckpoint = useMutation(api.campers.setCheckpoint);
   const [selected, setSelected] = useState<CamperDoc | null>(null);
@@ -2067,7 +2176,7 @@ function InOutRosterView({
         </div>
       </div>
 
-      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode />}
+      {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode={!showCode} />}
     </>
   );
 }
@@ -2318,6 +2427,7 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
               emptyMessage={`No campers in ${prog}.`}
               overrides={overrides ?? []}
               hideSummary
+              showCode={kind === "AfterCare"}
             />
           </div>
         ));
@@ -2332,6 +2442,7 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
           emptyMessage={`No campers expected in ${title} today.`}
           overrides={overrides ?? []}
           hideSummary
+          showCode={kind === "AfterCare"}
         />
       )}
 
