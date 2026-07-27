@@ -2340,6 +2340,7 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   const allCampers   = useQuery(api.campers.list);
   const overrides    = useQuery(api.dailyOverrides.getForDate, {});
   const [careGroupBy, setCareGroupBy] = useState<"all" | "program">("all");
+  const [careSearch, setCareSearch] = useState("");
   const [addingExternal, setAddingExternal] = useState(false);
   const [extForm, setExtForm] = useState(() => ({ firstName: "", lastName: "", program: kind === "BeforeCare" ? "Grossman Before Care" : "Grossman After Care", allergy: "" }));
   const [extError, setExtError] = useState("");
@@ -2409,6 +2410,13 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   const removedIds = new Set(removedToday.map(c => c._id));
   const activeRoster = normalRoster.filter(c => !removedIds.has(c._id));
   const todayRoster = [...activeRoster, ...addedToday];
+
+  // Name/code search — narrows the rendered roster only; summary counts below
+  // still reflect the full roster.
+  const careQ = careSearch.toLowerCase().trim();
+  const searchedRoster = careQ
+    ? todayRoster.filter(c => camperName(c).toLowerCase().includes(careQ) || (c.code ?? "").toLowerCase().includes(careQ))
+    : todayRoster;
 
   // Summary counts — mirror the bunk attendance strip.
   const isAbsentToday = (c: CamperDoc) =>
@@ -2497,6 +2505,13 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
         </div>
       )}
 
+      <div className="relative">
+        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+        <input value={careSearch} onChange={e => setCareSearch(e.target.value)}
+          placeholder="Search name or code…"
+          className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm bg-white focus:outline-none" />
+      </div>
+
       <div className="flex gap-1.5">
         <button onClick={() => setCareGroupBy("all")}
           className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors ${careGroupBy === "all" ? "text-white" : "bg-white text-slate-500 border border-slate-200"}`}
@@ -2508,7 +2523,7 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
 
       {careGroupBy === "program" ? (() => {
         const groups = new Map<string, CamperDoc[]>();
-        for (const c of todayRoster) {
+        for (const c of searchedRoster) {
           const prog = (c as Record<string, unknown>)[programField] as string || jcampsProgram;
           if (!groups.has(prog)) groups.set(prog, []);
           groups.get(prog)!.push(c);
@@ -2535,13 +2550,13 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
         ));
       })() : (
         <InOutRosterView
-          campers={todayRoster}
+          campers={searchedRoster}
           checkpoint={kind}
           staffName={staff.name}
           inLabel="Mark In"
           outLabel={outLabel}
           groupLabel={title}
-          emptyMessage={`No campers expected in ${title} today.`}
+          emptyMessage={careQ ? `No matches for "${careSearch.trim()}".` : `No campers expected in ${title} today.`}
           overrides={overrides ?? []}
           hideSummary
           showCode={kind === "AfterCare"}
