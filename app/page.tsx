@@ -2830,6 +2830,8 @@ function BusView({ staff }: { staff: StaffDoc }) {
   const toggleRoute = (r: string) => { const s = new Set(expandedRoutes); if (s.has(r)) s.delete(r); else s.add(r); setExpandedRoutes(s); };
   // Inline two-tap confirm (native confirm() is suppressed in PWA/kiosk webviews).
   const renderResetButton = (clist: CamperDoc[], label: string) => {
+    // Only admins/directors may reset bus checkpoints.
+    if (!isAdmin) return null;
     if (confirmingReset === label) {
       return (
         <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
