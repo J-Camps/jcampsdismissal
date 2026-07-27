@@ -637,6 +637,92 @@ export const setCheckpoint = mutation({
   },
 });
 
+// The five bus checkpoints tracked on the Bus sheet (AM + PM).
+const BUS_CHECKPOINT_KEYS = [
+  "MorningBusIn",
+  "MorningBusRoom",
+  "AfternoonBusRoomIn",
+  "AfternoonBusOnBoard",
+  "AfternoonBusAtStop",
+] as const;
+
+// Clear today's bus attendance (all five bus checkpoints) for the given campers.
+// Used by the "Reset attendance" button on the Bus view. Leaves non-bus
+// checkpoints (before/after care, lunch, etc.) untouched.
+export const resetBusCheckpoints = mutation({
+  args: {
+    ids: v.array(v.id("campers")),
+    staffName: v.string(),
+    label: v.optional(v.string()), // e.g. "Blue Bus" or "All Buses"
+  },
+  handler: async (ctx, { ids, staffName, label }) => {
+    let cleared = 0;
+    for (const id of ids) {
+      const camper = await ctx.db.get(id);
+      if (!camper) continue;
+
+      const inState = { ...(camper.dailyCheckpoints ?? {}) };
+      const outState = { ...(camper.dailyCheckpointsOut ?? {}) };
+      let changed = false;
+      for (const key of BUS_CHECKPOINT_KEYS) {
+        if (inState[key]) { inState[key] = false; changed = true; }
+        if (outState[key]) { outState[key] = false; changed = true; }
+      }
+      if (!changed) continue;
+
+      await ctx.db.patch(id, { dailyCheckpoints: inState, dailyCheckpointsOut: outState });
+      await ctx.db.insert("attendanceLogs", {
+        camperId: id,
+        date: today(),
+        checkpoint: "MorningBusIn",
+        status: `Bus attendance reset${label ? ` (${label})` : ""}`,
+        staffName,
+        timestamp: Date.now(),
+      });
+      cleared++;
+    }
+    return { cleared };
+  },
+});
+
+// Clear today's Before Care or After Care attendance for the given campers.
+// Used by the "Reset attendance" button on the Before/After Care views. Only
+// touches the one care checkpoint; bus, lunch, and period state are untouched.
+export const resetCareCheckpoint = mutation({
+  args: {
+    ids: v.array(v.id("campers")),
+    checkpoint: v.union(v.literal("BeforeCare"), v.literal("AfterCare")),
+    staffName: v.string(),
+  },
+  handler: async (ctx, { ids, checkpoint, staffName }) => {
+    const label = checkpoint === "BeforeCare" ? "Before Care" : "After Care";
+    let cleared = 0;
+    for (const id of ids) {
+      const camper = await ctx.db.get(id);
+      if (!camper) continue;
+
+      const hasIn = !!camper.dailyCheckpoints?.[checkpoint];
+      const hasOut = !!camper.dailyCheckpointsOut?.[checkpoint];
+      if (!hasIn && !hasOut) continue;
+
+      await ctx.db.patch(id, {
+        dailyCheckpoints: { ...(camper.dailyCheckpoints ?? {}), [checkpoint]: false },
+        dailyCheckpointsOut: { ...(camper.dailyCheckpointsOut ?? {}), [checkpoint]: false },
+      });
+      await ctx.db.insert("attendanceLogs", {
+        camperId: id,
+        date: today(),
+        checkpoint,
+        status: `${label} attendance reset`,
+        staffName,
+        timestamp: Date.now(),
+      });
+      cleared++;
+    }
+    return { cleared };
+  },
+});
+
 // ─── Admin Camper Management ────────────────────────────────────────────────
 
 export const deactivate = mutation({

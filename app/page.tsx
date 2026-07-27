@@ -10,7 +10,7 @@ import {
   AlertTriangle, LogOut, ChevronDown, ChevronUp,
   X, Hash, BookOpen, Bus, ArrowRight, StickyNote,
   CheckCircle2, ChevronLeft, Upload, Users, Building2, Calendar, UtensilsCrossed,
-  Route,
+  Route, Moon, Drama,
 } from "lucide-react";
 
 // ─── Brand colors (JCC Greater Boston) ───────────────────────────────────────
@@ -73,6 +73,44 @@ const today = () => new Date().toISOString().split("T")[0];
 
 // Which Upper Camp schedule today follows: Friday → "Friday", else "MonThu".
 const currentDayType = (): "MonThu" | "Friday" => (new Date().getDay() === 5 ? "Friday" : "MonThu");
+
+// ─── CSV export ───────────────────────────────────────────────────────────────
+// Serialize a single value for a CSV cell. Objects/arrays become JSON so nested
+// fields (periodGroups, dailyCheckpoints, …) survive the export losslessly.
+function csvCell(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  const s = typeof value === "object" ? JSON.stringify(value) : String(value);
+  // Quote if the cell contains a comma, quote, or newline; escape inner quotes.
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+// Build a CSV string from a list of records. Columns are the union of every key
+// across all rows (so no field is dropped), with `_id`/`_creationTime` first.
+function rowsToCsv(rows: Record<string, unknown>[]): string {
+  const keys = new Set<string>();
+  for (const r of rows) for (const k of Object.keys(r)) keys.add(k);
+  const priority = ["_id", "_creationTime"];
+  const columns = [
+    ...priority.filter(k => keys.has(k)),
+    ...[...keys].filter(k => !priority.includes(k)).sort(),
+  ];
+  const lines = [columns.map(csvCell).join(",")];
+  for (const r of rows) lines.push(columns.map(c => csvCell(r[c])).join(","));
+  return lines.join("\r\n");
+}
+
+// Trigger a browser download of `content` as a file. Fully client-side.
+function downloadFile(filename: string, content: string, mime = "text/csv;charset=utf-8;") {
+  const blob = new Blob(["﻿" + content], { type: mime }); // BOM → Excel reads UTF-8
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 type StaffDoc  = Doc<"staff">;
 type CamperDoc = Doc<"campers">;
@@ -1304,6 +1342,20 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 const ARRIVAL_OPTIONS = ["Carline", "Before Care", "Bus 1", "Bus 2", "Bus 3", "Bus 4", "Bus 5", "Bus 6"];
 const DISMISSAL_OPTIONS = ["Carline", "After Care", "Bus 1", "Bus 2", "Bus 3", "Bus 4", "Bus 5", "Bus 6"];
+// Stay-late events: the camper stays at camp instead of taking their PM ride
+// home. Always a one-off, never a camper's permanent dismissal method.
+const LATE_NIGHT = "Late Night";
+const THEATER    = "Theater";
+const STAY_LATE_EVENTS = [LATE_NIGHT, THEATER];
+const DISMISSAL_OVERRIDE_OPTIONS = [...DISMISSAL_OPTIONS, ...STAY_LATE_EVENTS];
+// Stay-late campers stay on their normal bus / After Care sheet so those staff
+// know not to expect them, rather than silently vanishing from the roster.
+const stayLateEvent = (ov?: { afternoonDismissal?: string } | null): string | null => {
+  const d = ov?.afternoonDismissal;
+  return d && STAY_LATE_EVENTS.includes(d) ? d : null;
+};
+const StayLateIcon = ({ event, size }: { event: string; size?: number }) =>
+  event === THEATER ? <Drama size={size} /> : <Moon size={size} />;
 
 function AdminCamperEditForm({ camper, staffName, onDone }: { camper: CamperDoc; staffName: string; onDone: () => void }) {
   const adminEdit = useMutation(api.campers.adminEdit);
@@ -1921,7 +1973,7 @@ function FlagEditor({ camper, staffName, onClose }: { camper: CamperDoc; staffNa
             }}
             className="mt-1 w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none bg-white">
             <option value="">No change</option>
-            {DISMISSAL_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+            {DISMISSAL_OVERRIDE_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
           </select>
           {camper.dismissalMethod && <p className="text-[10px] text-slate-400 mt-0.5">Normal: {camper.dismissalMethod}</p>}
         </label>
@@ -2119,6 +2171,9 @@ function InOutRosterView({
   for (const o of overrides ?? []) overrideMap.set(o.camperId, o);
   const isAbsentToday = (c: CamperDoc) =>
     overrideMap.get(c._id)?.isAbsent === true || c.arrivalStatus === "Absent";
+  // Stay-late events don't touch the morning, so Before Care is unaffected.
+  const stayLateToday = (c: CamperDoc) =>
+    checkpoint === "BeforeCare" ? null : stayLateEvent(overrideMap.get(c._id));
 
   if (campers.length === 0) {
     return (
@@ -2130,18 +2185,20 @@ function InOutRosterView({
 
   const sorted = [...campers].sort((a, b) => camperName(a).localeCompare(camperName(b)));
 
-  // Counters mirror the bunk view: In / Not In / Out / Absent.
-  const absentCount = sorted.filter(c => isAbsentToday(c)).length;
-  const inCount     = sorted.filter(c => !isAbsentToday(c) && c.dailyCheckpoints?.[checkpoint] && !c.dailyCheckpointsOut?.[checkpoint]).length;
-  const outCount    = sorted.filter(c => !isAbsentToday(c) && c.dailyCheckpoints?.[checkpoint] && c.dailyCheckpointsOut?.[checkpoint]).length;
-  const notInCount  = sorted.filter(c => !isAbsentToday(c) && !c.dailyCheckpoints?.[checkpoint]).length;
+  // Counters mirror the bunk view: In / Not In / Out / Absent / Staying Late.
+  const skip = (c: CamperDoc) => isAbsentToday(c) || !!stayLateToday(c);
+  const absentCount    = sorted.filter(c => isAbsentToday(c)).length;
+  const stayLateCount  = sorted.filter(c => !isAbsentToday(c) && stayLateToday(c)).length;
+  const inCount     = sorted.filter(c => !skip(c) && c.dailyCheckpoints?.[checkpoint] && !c.dailyCheckpointsOut?.[checkpoint]).length;
+  const outCount    = sorted.filter(c => !skip(c) && c.dailyCheckpoints?.[checkpoint] && c.dailyCheckpointsOut?.[checkpoint]).length;
+  const notInCount  = sorted.filter(c => !skip(c) && !c.dailyCheckpoints?.[checkpoint]).length;
 
   const toggleIn = (c: CamperDoc) => {
-    if (isAbsentToday(c)) return;
+    if (skip(c)) return;
     setCheckpoint({ id: c._id, checkpoint, value: !c.dailyCheckpoints?.[checkpoint], staffName, label: groupLabel, phase: "in" });
   };
   const toggleOut = (c: CamperDoc) => {
-    if (isAbsentToday(c)) return;
+    if (skip(c)) return;
     setCheckpoint({ id: c._id, checkpoint, value: !c.dailyCheckpointsOut?.[checkpoint], staffName, label: groupLabel, phase: "out" });
   };
 
@@ -2156,6 +2213,7 @@ function InOutRosterView({
               <Pill value={notInCount} label="Not In" color="slate" />
               <Pill value={outCount}   label="Out"    color="blue" />
               {absentCount > 0 && <Pill value={absentCount} label="Absent" color="amber" />}
+              {stayLateCount > 0 && <Pill value={stayLateCount} label="Staying Late" color="violet" />}
             </div>
             <p className="text-xs text-slate-500 text-center -mt-1">
               {sorted.length} enrolled
@@ -2167,6 +2225,7 @@ function InOutRosterView({
           {sorted.map(c => (
             <InOutCamperRow key={c._id} camper={c} checkpoint={checkpoint}
               isAbsent={isAbsentToday(c)}
+              stayLate={stayLateToday(c)}
               override={overrideMap.get(c._id)}
               onOpenProfile={() => setSelected(c)}
               onToggleIn={() => toggleIn(c)}
@@ -2183,11 +2242,12 @@ function InOutRosterView({
 
 // Care/Bus roster row — same layout & badges as BunkCamperRow.
 function InOutCamperRow({
-  camper, checkpoint, isAbsent, override, onOpenProfile, onToggleIn, onToggleOut,
+  camper, checkpoint, isAbsent, stayLate, override, onOpenProfile, onToggleIn, onToggleOut,
 }: {
   camper: CamperDoc;
   checkpoint: "BeforeCare" | "AfterCare" | "Bus";
   isAbsent: boolean;
+  stayLate?: string | null;
   override?: DailyOverride;
   onOpenProfile: () => void;
   onToggleIn: () => void;
@@ -2197,9 +2257,10 @@ function InOutCamperRow({
   const bg = avatarBg(camper.name);
   const arrived = !!camper.dailyCheckpoints?.[checkpoint];
   const dismissed = !!camper.dailyCheckpointsOut?.[checkpoint];
+  const locked = isAbsent || !!stayLate;
 
   return (
-    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${isAbsent ? "border-slate-200 opacity-60" : "border-slate-200"}`}>
+    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${isAbsent ? "border-slate-200 opacity-60" : stayLate ? "border-violet-200 opacity-70" : "border-slate-200"}`}>
       {/* Info area → opens profile */}
       <button onClick={onOpenProfile} className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-slate-50">
         <div className="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 font-bold text-lg text-white overflow-hidden"
@@ -2233,7 +2294,9 @@ function InOutCamperRow({
             {override?.earlyPickupTime && (
               <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full">Early: {fmtClock(override.earlyPickupTime)}</span>
             )}
-            {override?.afternoonDismissal && (
+            {stayLate ? (
+              <span className="text-[10px] font-bold text-violet-700 bg-violet-100 px-1.5 py-0.5 rounded-full flex items-center gap-0.5"><StayLateIcon event={stayLate} size={9} />{stayLate} — not coming</span>
+            ) : override?.afternoonDismissal && (
               <span className="text-[10px] font-bold text-violet-700 bg-violet-100 px-1.5 py-0.5 rounded-full">Dismissal: {camper.dismissalMethod ?? "?"} → {override.afternoonDismissal}</span>
             )}
             {override?.morningArrival && (
@@ -2249,17 +2312,17 @@ function InOutCamperRow({
 
       {/* Two tap targets: In | Out — same style as bunk */}
       <div className="border-t border-slate-100 flex">
-        <button onClick={onToggleIn} disabled={isAbsent}
+        <button onClick={onToggleIn} disabled={locked}
           className={`flex-1 py-3 text-sm font-bold flex items-center justify-center gap-1.5 border-r border-slate-100 transition-colors ${
-            isAbsent ? "bg-slate-50 text-slate-300 cursor-not-allowed"
+            locked ? "bg-slate-50 text-slate-300 cursor-not-allowed"
             : arrived ? "bg-green-500 text-white active:bg-green-600"
             : "bg-white text-slate-500 active:bg-slate-50"
           }`}>
           In
         </button>
-        <button onClick={onToggleOut} disabled={isAbsent || !arrived}
+        <button onClick={onToggleOut} disabled={locked || !arrived}
           className={`flex-1 py-3 text-sm font-bold flex items-center justify-center gap-1.5 transition-colors ${
-            isAbsent || !arrived ? "bg-slate-50 text-slate-300 cursor-not-allowed"
+            locked || !arrived ? "bg-slate-50 text-slate-300 cursor-not-allowed"
             : dismissed ? "bg-green-500 text-white active:bg-green-600"
             : "bg-white text-slate-500 active:bg-slate-50"
           }`}>
@@ -2290,9 +2353,13 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
     { key: "firstName", label: "First Name", required: true },
     { key: "lastName", label: "Last Name", required: true },
     { key: "program", label: "Program", required: false },
+    { key: "safetyCode", label: "Safety Code", required: false },
     { key: "allergyNotes", label: "Allergy Notes", required: false },
   ] as const;
   const createCamper = useMutation(api.campers.adminCreate);
+  const resetCareCheckpoint = useMutation(api.campers.resetCareCheckpoint);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetting, setResetting] = useState(false);
   if (normalRoster === undefined || allCampers === undefined) return <Loading />;
 
   const isBefore = kind === "BeforeCare";
@@ -2305,11 +2372,11 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   const programField = isBefore ? "beforeCareProgram" : "afterCareProgram";
   const defaultProgram = isBefore ? "Grossman Before Care" : "Grossman After Care";
   const jcampsProgram = isBefore ? "JCamps Before Care" : "JCamps After Care";
-  const buildExternalArgs = (fn: string, ln: string, prog: string, allergy?: string) => ({
+  const buildExternalArgs = (fn: string, ln: string, prog: string, allergy?: string, code?: string) => ({
     preferredName: fn,
     lastName: ln || undefined,
     bunk: "External",
-    code: "000",
+    code: code?.trim() || "000",
     ...(isBefore
       ? { arrivalMethod: "Before Care", beforeCareProgram: prog }
       : { dismissalMethod: "After Care", afterCareProgram: prog }),
@@ -2333,6 +2400,9 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   // Campers overridden OUT of this care today (normally here)
   const removedToday = normalRoster.filter(c => {
     const ov = overrideMap.get(c._id);
+    // Stay-late events only change the afternoon, so they never remove anyone
+    // from Before Care, and in After Care they stay listed with a "not coming" flag.
+    if (!isBefore && stayLateEvent(ov)) return false;
     return ov?.[matchField] && ov[matchField] !== matchValue;
   });
 
@@ -2343,17 +2413,48 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   // Summary counts — mirror the bunk attendance strip.
   const isAbsentToday = (c: CamperDoc) =>
     overrideMap.get(c._id)?.isAbsent === true || c.arrivalStatus === "Absent";
-  const absentCount = todayRoster.filter(c => isAbsentToday(c)).length;
-  const inCount     = todayRoster.filter(c => !isAbsentToday(c) && c.dailyCheckpoints?.[kind] && !c.dailyCheckpointsOut?.[kind]).length;
-  const outCount    = todayRoster.filter(c => !isAbsentToday(c) && c.dailyCheckpoints?.[kind] && c.dailyCheckpointsOut?.[kind]).length;
-  const notInCount  = todayRoster.filter(c => !isAbsentToday(c) && !c.dailyCheckpoints?.[kind]).length;
+  const stayLateToday = (c: CamperDoc) => isBefore ? null : stayLateEvent(overrideMap.get(c._id));
+  const skip = (c: CamperDoc) => isAbsentToday(c) || !!stayLateToday(c);
+  const absentCount    = todayRoster.filter(c => isAbsentToday(c)).length;
+  const stayLateCount  = todayRoster.filter(c => !isAbsentToday(c) && stayLateToday(c)).length;
+  const inCount     = todayRoster.filter(c => !skip(c) && c.dailyCheckpoints?.[kind] && !c.dailyCheckpointsOut?.[kind]).length;
+  const outCount    = todayRoster.filter(c => !skip(c) && c.dailyCheckpoints?.[kind] && c.dailyCheckpointsOut?.[kind]).length;
+  const notInCount  = todayRoster.filter(c => !skip(c) && !c.dailyCheckpoints?.[kind]).length;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{title}</h2>
+        {confirmingReset ? (
+          <div className="ml-auto flex items-center gap-1.5">
+            <button disabled={resetting} onClick={async () => {
+              const ids = todayRoster.map(c => c._id);
+              if (ids.length === 0) { setConfirmingReset(false); return; }
+              setResetting(true);
+              try {
+                await resetCareCheckpoint({ ids, checkpoint: kind, staffName: staff.name });
+              } finally {
+                setResetting(false);
+                setConfirmingReset(false);
+              }
+            }}
+              className="flex items-center gap-1.5 text-xs bg-red-600 text-white px-3 py-1.5 rounded-xl active:bg-red-700 font-semibold disabled:opacity-60">
+              <RotateCcw size={14} className={resetting ? "animate-spin" : ""} />
+              {resetting ? "Resetting…" : `Reset ${todayRoster.length}?`}
+            </button>
+            <button disabled={resetting} onClick={() => setConfirmingReset(false)}
+              className="text-xs text-slate-500 px-2 py-1.5 rounded-xl active:bg-slate-100 font-semibold">
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button onClick={() => setConfirmingReset(true)}
+            className="ml-auto flex items-center gap-1.5 text-xs bg-red-50 text-red-600 px-3 py-1.5 rounded-xl active:bg-red-100 font-semibold">
+            <RotateCcw size={14} /> Reset
+          </button>
+        )}
         <button onClick={() => setAddingExternal(true)}
-          className="ml-auto text-xs font-semibold text-white px-3 py-1.5 rounded-xl"
+          className="text-xs font-semibold text-white px-3 py-1.5 rounded-xl"
           style={{ backgroundColor: "#023B64" }}>+ External</button>
       </div>
 
@@ -2363,6 +2464,7 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
         <Pill value={notInCount} label="Not In" color="slate" />
         <Pill value={outCount}   label="Out"    color="blue" />
         {absentCount > 0 && <Pill value={absentCount} label="Absent" color="amber" />}
+        {stayLateCount > 0 && <Pill value={stayLateCount} label="Staying Late" color="violet" />}
       </div>
       <p className="text-xs text-slate-500 text-center -mt-1">
         {todayRoster.length} enrolled
@@ -2466,7 +2568,7 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
                 <div className="space-y-3">
                   {!extCsvData ? (
                     <>
-                      <p className="text-xs text-slate-500">CSV: First Name, Last Name, Program, Allergy Notes</p>
+                      <p className="text-xs text-slate-500">CSV: First Name, Last Name, Program, Safety Code, Allergy Notes</p>
                       <label className="inline-block text-xs font-semibold text-white px-3 py-2 rounded-xl cursor-pointer"
                         style={{ backgroundColor: "#023B64" }}>
                         Choose CSV
@@ -2519,11 +2621,13 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
                         const fn = extMapping.firstName ? (row[extMapping.firstName]?.trim() ?? "") : "";
                         const ln = extMapping.lastName ? (row[extMapping.lastName]?.trim() ?? "") : "";
                         const prog = extMapping.program ? (row[extMapping.program]?.trim() ?? "") : "";
+                        const code = extMapping.safetyCode ? (row[extMapping.safetyCode]?.trim() ?? "") : "";
                         const allergy = extMapping.allergyNotes ? (row[extMapping.allergyNotes]?.trim() ?? "") : "";
                         return (
                           <div key={i} className="text-sm">
                             <span className="font-semibold text-slate-900">{fn} {ln}</span>
                             {prog && <span className="text-xs text-slate-400 ml-2">{prog}</span>}
+                            {code && <span className="text-[10px] font-mono text-slate-500 ml-2">#{code}</span>}
                             {allergy && <span className="text-[10px] text-red-600 ml-2">Allergy: {allergy}</span>}
                           </div>
                         );
@@ -2541,9 +2645,10 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
                             const ln = extMapping.lastName ? (row[extMapping.lastName]?.trim() ?? "") : "";
                             if (!fn) { errors.push(`Row ${i + 2}: missing first name`); continue; }
                             const prog = extMapping.program ? (row[extMapping.program]?.trim() || defaultProgram) : defaultProgram;
+                            const code = extMapping.safetyCode ? (row[extMapping.safetyCode]?.trim() || undefined) : undefined;
                             const allergy = extMapping.allergyNotes ? (row[extMapping.allergyNotes]?.trim() || undefined) : undefined;
                             try {
-                              await createCamper(buildExternalArgs(fn, ln, prog, allergy));
+                              await createCamper(buildExternalArgs(fn, ln, prog, allergy, code));
                               created++;
                             } catch (e: unknown) { errors.push(`Row ${i + 2}: ${e instanceof Error ? e.message : "failed"}`); }
                           }
@@ -2647,6 +2752,7 @@ function BusView({ staff }: { staff: StaffDoc }) {
   const allCampers = useQuery(api.campers.list);
   const overrides  = useQuery(api.dailyOverrides.getForDate, {});
   const setCheckpoint = useMutation(api.campers.setCheckpoint);
+  const resetBusCheckpoints = useMutation(api.campers.resetBusCheckpoints);
   const isAdmin = [staff.role, ...(staff.extraRoles ?? [])].some(r => r === "admin" || r === "director");
   const allRouteNames = busRouteRecords && busRouteRecords.length > 0
     ? busRouteRecords.filter(r => r.isActive !== false).sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99)).map(r => r.name)
@@ -2659,6 +2765,8 @@ function BusView({ staff }: { staff: StaffDoc }) {
   const [search, setSearch] = useState("");
   const [groupByStop, setGroupByStop] = useState(false);
   const [expandedRoutes, setExpandedRoutes] = useState<Set<string>>(new Set());
+  const [confirmingReset, setConfirmingReset] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   if (allCampers === undefined) return <Loading />;
 
@@ -2677,7 +2785,10 @@ function BusView({ staff }: { staff: StaffDoc }) {
       const ov = overrideMap.get(c._id);
       if (!ov) return false;
       const arrStays = (c.arrivalMethod === route && !ov.morningArrival) || ov.morningArrival === route;
-      const disStays = (c.dismissalMethod === route && !ov.afternoonDismissal) || ov.afternoonDismissal === route;
+      // Stay-late campers keep their spot on the sheet — the driver needs to see
+      // them flagged as not riding, not have them disappear.
+      const disOv = stayLateEvent(ov) ? undefined : ov.afternoonDismissal;
+      const disStays = (c.dismissalMethod === route && !disOv) || disOv === route;
       return !arrStays && !disStays;
     });
     const removedIds = new Set(removed.map(c => c._id));
@@ -2689,20 +2800,60 @@ function BusView({ staff }: { staff: StaffDoc }) {
   const dedupedAll = allBusCampers.filter(c => { if (uniqueBusIds.has(c._id)) return false; uniqueBusIds.add(c._id); return true; });
 
   const isAbsent = (c: CamperDoc) => overrideMap.get(c._id)?.isAbsent === true || c.arrivalStatus === "Absent";
-  const allDoneFn = (c: CamperDoc) => BUS_CHECKPOINTS.every(cp => c.dailyCheckpoints?.[cp.key]);
+  // Stay-late events only cancel the ride home — the morning leg is unchanged.
+  const stayLateToday = (c: CamperDoc) => stayLateEvent(overrideMap.get(c._id));
+  const cpLocked = (c: CamperDoc, phase: string) => isAbsent(c) || (phase === "PM" && !!stayLateToday(c));
+  const allDoneFn = (c: CamperDoc) =>
+    BUS_CHECKPOINTS.every(cp => c.dailyCheckpoints?.[cp.key] || cpLocked(c, cp.phase));
   const toggleCp = (c: CamperDoc, key: string) => {
-    if (isAbsent(c)) return;
+    const cp = BUS_CHECKPOINTS.find(x => x.key === key);
+    if (cpLocked(c, cp?.phase ?? "AM")) return;
     setCheckpoint({ id: c._id, checkpoint: key as "MorningBusIn", value: !c.dailyCheckpoints?.[key], staffName: staff.name, label: view === "all" ? "" : view });
   };
   const toggleRoute = (r: string) => { const s = new Set(expandedRoutes); if (s.has(r)) s.delete(r); else s.add(r); setExpandedRoutes(s); };
+  // Inline two-tap confirm (native confirm() is suppressed in PWA/kiosk webviews).
+  const renderResetButton = (clist: CamperDoc[], label: string) => {
+    if (confirmingReset === label) {
+      return (
+        <div className="ml-auto flex items-center gap-1.5 flex-shrink-0">
+          <button disabled={resetting} onClick={async () => {
+            const ids = clist.map(c => c._id);
+            if (ids.length === 0) { setConfirmingReset(null); return; }
+            setResetting(true);
+            try {
+              await resetBusCheckpoints({ ids, staffName: staff.name, label });
+            } finally {
+              setResetting(false);
+              setConfirmingReset(null);
+            }
+          }}
+            className="flex items-center gap-1.5 text-xs bg-red-600 text-white px-3 py-2 rounded-xl active:bg-red-700 font-semibold disabled:opacity-60">
+            <RotateCcw size={14} className={resetting ? "animate-spin" : ""} />
+            {resetting ? "Resetting…" : `Reset ${clist.length}?`}
+          </button>
+          <button disabled={resetting} onClick={() => setConfirmingReset(null)}
+            className="text-xs text-slate-500 px-2 py-2 rounded-xl active:bg-slate-100 font-semibold">
+            Cancel
+          </button>
+        </div>
+      );
+    }
+    return (
+      <button onClick={() => setConfirmingReset(label)}
+        className="ml-auto flex items-center gap-1.5 text-xs bg-red-50 text-red-600 px-3 py-2 rounded-xl active:bg-red-100 font-semibold flex-shrink-0">
+        <RotateCcw size={14} /> Reset
+      </button>
+    );
+  };
 
   const renderCounters = (clist: CamperDoc[]) => (
     <div className="grid grid-cols-5 gap-1">
       {BUS_CHECKPOINTS.map(cp => {
-        const done = busCpCount(clist, cp.key);
+        const expected = clist.filter(c => !(cp.phase === "PM" && stayLateToday(c)));
+        const done = busCpCount(expected, cp.key);
         return (
           <div key={cp.key} className="bg-white border border-slate-200 rounded-xl px-1 py-2 text-center">
-            <p className="text-sm font-bold text-slate-900">{done}<span className="text-slate-400 font-normal">/{clist.length}</span></p>
+            <p className="text-sm font-bold text-slate-900">{done}<span className="text-slate-400 font-normal">/{expected.length}</span></p>
             <p className="text-[9px] text-slate-400 uppercase">{cp.phase} {cp.label}</p>
           </div>
         );
@@ -2712,6 +2863,7 @@ function BusView({ staff }: { staff: StaffDoc }) {
 
   const renderCamperRow = (c: CamperDoc) => {
     const absent = isAbsent(c);
+    const stayLate = stayLateToday(c);
     const done = allDoneFn(c);
     const sq = search.toLowerCase();
     if (sq && !camperName(c).toLowerCase().includes(sq) && !c.bunk.toLowerCase().includes(sq) && !(c.busStop ?? "").toLowerCase().includes(sq) && !c.code.includes(sq)) return null;
@@ -2730,6 +2882,7 @@ function BusView({ staff }: { staff: StaffDoc }) {
               {c.walkPermission && <span className="text-[10px] font-bold text-green-700 bg-green-100 px-1.5 py-0.5 rounded-full">Walk</span>}
               {c.hasAllergies && <span className="text-[10px] font-bold text-red-700 bg-red-100 px-1.5 py-0.5 rounded-full">ALLERGY</span>}
               {absent && <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">Absent</span>}
+              {stayLate && <span className="text-[10px] font-bold text-violet-700 bg-violet-100 px-1.5 py-0.5 rounded-full flex items-center gap-0.5"><StayLateIcon event={stayLate} size={9} />{stayLate} — no PM ride</span>}
             </div>
           </div>
         </button>
@@ -2748,6 +2901,9 @@ function BusView({ staff }: { staff: StaffDoc }) {
             <div className="w-px h-12 bg-slate-200" />
             <div className="flex-1">
               <p className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{ color: "#023B64" }}>Afternoon</p>
+              {stayLate ? (
+                <p className="text-[11px] font-semibold text-violet-600 py-2">Staying for {stayLate} — not on the afternoon bus.</p>
+              ) : (
               <div className="flex gap-2">
                 {BUS_CHECKPOINTS.filter(cp => cp.phase === "PM").map(cp => { const checked = !!c.dailyCheckpoints?.[cp.key]; return (
                   <button key={cp.key} onClick={() => toggleCp(c, cp.key)} disabled={absent} className={`flex flex-col items-center gap-1 ${absent ? "cursor-not-allowed" : ""}`}>
@@ -2755,6 +2911,7 @@ function BusView({ staff }: { staff: StaffDoc }) {
                     <span className={`text-[11px] font-semibold ${checked ? "text-green-600" : "text-slate-400"}`}>{cp.label}</span>
                   </button>); })}
               </div>
+              )}
             </div>
           </div>
         </div>
@@ -2766,7 +2923,10 @@ function BusView({ staff }: { staff: StaffDoc }) {
   if (view === "all") return (
     <>
       <div className="space-y-4">
-        <div className="flex items-center gap-2"><Bus size={22} className="text-slate-700" /><h2 className="text-xl font-bold text-slate-900">All Buses</h2><span className="text-sm text-slate-400 ml-1">{dedupedAll.length} campers</span></div>
+        <div className="flex items-center gap-2">
+          <Bus size={22} className="text-slate-700" /><h2 className="text-xl font-bold text-slate-900">All Buses</h2><span className="text-sm text-slate-400 ml-1">{dedupedAll.length} campers</span>
+          {renderResetButton(dedupedAll, "All Buses")}
+        </div>
         {renderCounters(dedupedAll)}
         <div className="relative"><Search size={15} className="absolute left-3 top-3 text-slate-400" /><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, bunk, code, bus stop…" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm bg-white focus:outline-none" /></div>
         <div className="flex gap-1.5 overflow-x-auto pb-1">
@@ -2776,7 +2936,8 @@ function BusView({ staff }: { staff: StaffDoc }) {
         {routes.map(r => {
           const rr = getBusRoster(r).sort((a, b) => camperName(a).localeCompare(camperName(b)));
           const expanded = expandedRoutes.has(r);
-          const cpDone = BUS_CHECKPOINTS.map(cp => busCpCount(rr, cp.key));
+          const cpExpected = BUS_CHECKPOINTS.map(cp => rr.filter(c => !(cp.phase === "PM" && stayLateToday(c))));
+          const cpDone = BUS_CHECKPOINTS.map((cp, i) => busCpCount(cpExpected[i], cp.key));
           const bc = getBusColor(r);
           return (
             <div key={r} className="rounded-2xl shadow-sm overflow-hidden" style={{ backgroundColor: bc.light, border: `1.5px solid ${bc.border}` }}>
@@ -2784,7 +2945,7 @@ function BusView({ staff }: { staff: StaffDoc }) {
                 <div className="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0" style={{ backgroundColor: bc.bg, color: bc.text }}>{rr.length}</div>
                 <div className="flex-1 min-w-0">
                   <p className="font-bold text-slate-900">{r}</p>
-                  <div className="flex gap-2 mt-1 text-[10px] text-slate-400">{BUS_CHECKPOINTS.map((cp, i) => <span key={cp.key} className={cpDone[i] === rr.length && rr.length > 0 ? "text-green-600 font-bold" : ""}>{cp.phase[0]}{cp.label[0]}: {cpDone[i]}/{rr.length}</span>)}</div>
+                  <div className="flex gap-2 mt-1 text-[10px] text-slate-400">{BUS_CHECKPOINTS.map((cp, i) => <span key={cp.key} className={cpDone[i] === cpExpected[i].length && cpExpected[i].length > 0 ? "text-green-600 font-bold" : ""}>{cp.phase[0]}{cp.label[0]}: {cpDone[i]}/{cpExpected[i].length}</span>)}</div>
                 </div>
                 {expanded ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
               </button>
@@ -2805,7 +2966,10 @@ function BusView({ staff }: { staff: StaffDoc }) {
     <>
       <div className="space-y-4">
         <button onClick={() => setView("all")} className="text-sm text-slate-500 flex items-center gap-1">← All Buses</button>
-        <h2 className="text-2xl font-bold" style={{ color: getBusColor(view).bg }}>{view}</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-2xl font-bold" style={{ color: getBusColor(view).bg }}>{view}</h2>
+          {renderResetButton(singleRoster, view)}
+        </div>
         {renderCounters(singleRoster)}
         <div className="flex gap-1.5 overflow-x-auto pb-1">
           <button onClick={() => setView("all")} className="px-3.5 py-2 rounded-xl text-sm font-semibold flex-shrink-0" style={{ color: "#64748b", backgroundColor: "#fff", border: "1px solid #e2e8f0" }}>All</button>
@@ -3004,8 +3168,8 @@ function AttendanceNoteLine({ note }: { note?: string }) {
   );
 }
 
-function Pill({ value, label, color }: { value: number; label: string; color: "green"|"blue"|"slate"|"amber" }) {
-  const styles = { green:"bg-green-50 text-green-700 border-green-200", blue:"bg-blue-50 text-blue-700 border-blue-200", slate:"bg-slate-50 text-slate-600 border-slate-200", amber:"bg-amber-50 text-amber-700 border-amber-200" };
+function Pill({ value, label, color }: { value: number; label: string; color: "green"|"blue"|"slate"|"amber"|"violet" }) {
+  const styles = { green:"bg-green-50 text-green-700 border-green-200", blue:"bg-blue-50 text-blue-700 border-blue-200", slate:"bg-slate-50 text-slate-600 border-slate-200", amber:"bg-amber-50 text-amber-700 border-amber-200", violet:"bg-violet-50 text-violet-700 border-violet-200" };
   return (
     <div className={`flex-1 border rounded-xl py-2.5 text-center ${styles[color]}`}>
       <p className="text-xl font-bold leading-none">{value}</p>
@@ -3588,11 +3752,19 @@ function Admin() {
           <Settings size={22} className="text-slate-700" />
           <h2 className="text-xl font-bold text-slate-900">Admin</h2>
           <button onClick={() => {
+            if (!campers || campers.length === 0) return;
+            const csv = rowsToCsv(campers as unknown as Record<string, unknown>[]);
+            downloadFile(`campers-${today()}.csv`, csv);
+          }}
+            className="ml-auto flex items-center gap-1.5 text-sm bg-slate-100 text-slate-700 px-3 py-2 rounded-xl active:bg-slate-200 font-semibold">
+            <Upload size={15} className="rotate-180" /> Export CSV
+          </button>
+          <button onClick={() => {
             if (confirm("Start new day?\n\nThis clears all today's live attendance (arrivals, bunk check-ins, dismissal status).\n\nDaily overrides, future plans, and attendance history are NOT deleted.")) {
               clearDailyState();
             }
           }}
-            className="ml-auto flex items-center gap-1.5 text-sm bg-red-50 text-red-600 px-3 py-2 rounded-xl active:bg-red-100 font-semibold">
+            className="flex items-center gap-1.5 text-sm bg-red-50 text-red-600 px-3 py-2 rounded-xl active:bg-red-100 font-semibold">
             <RotateCcw size={15} /> New Day
           </button>
         </div>
