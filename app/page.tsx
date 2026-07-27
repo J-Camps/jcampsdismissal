@@ -2369,6 +2369,8 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   const matchField = isBefore ? "morningArrival" : "afternoonDismissal";
   const matchValue = isBefore ? "Before Care" : "After Care";
   const normalField = isBefore ? "arrivalMethod" : "dismissalMethod";
+  // Only admins/directors may reset the day's attendance for the whole roster.
+  const isAdmin = [staff.role, ...(staff.extraRoles ?? [])].some(r => r === "admin" || r === "director");
   // External-program plumbing (mirrored for Before Care and After Care).
   const programField = isBefore ? "beforeCareProgram" : "afterCareProgram";
   const defaultProgram = isBefore ? "Grossman Before Care" : "Grossman After Care";
@@ -2433,7 +2435,7 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{title}</h2>
-        {confirmingReset ? (
+        {isAdmin && (confirmingReset ? (
           <div className="ml-auto flex items-center gap-1.5">
             <button disabled={resetting} onClick={async () => {
               const ids = todayRoster.map(c => c._id);
@@ -2460,9 +2462,9 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
             className="ml-auto flex items-center gap-1.5 text-xs bg-red-50 text-red-600 px-3 py-1.5 rounded-xl active:bg-red-100 font-semibold">
             <RotateCcw size={14} /> Reset
           </button>
-        )}
+        ))}
         <button onClick={() => setAddingExternal(true)}
-          className="text-xs font-semibold text-white px-3 py-1.5 rounded-xl"
+          className={`${isAdmin ? "" : "ml-auto "}text-xs font-semibold text-white px-3 py-1.5 rounded-xl`}
           style={{ backgroundColor: "#023B64" }}>+ External</button>
       </div>
 
