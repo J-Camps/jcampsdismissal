@@ -271,6 +271,10 @@ export default defineSchema({
     role: STAFF_ROLE,
     extraRoles: v.optional(v.array(STAFF_ROLE)),
     bunkAssignment: v.optional(v.string()),
+    // Additional bunks this counselor can also see (beyond bunkAssignment).
+    // Used when one group of counselors covers several bunks — e.g. Tennis
+    // split into Tennis 1 / Tennis 2 with every tennis counselor on both.
+    extraBunks: v.optional(v.array(v.string())),
     unitAssignment: v.optional(v.string()),
     campSection: v.optional(v.string()),
     busRoute: v.optional(v.string()),

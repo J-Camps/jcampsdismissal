@@ -1020,7 +1020,7 @@ function AdminBunkView({ staff }: { staff: StaffDoc }) {
         </div>
       )}
       {selectedBunk ? (
-        <CounselorBunkView staff={staff} bunk={selectedBunk} />
+        <CounselorBunkView staff={staff} bunks={[selectedBunk]} />
       ) : (
         <Loading />
       )}
@@ -1469,7 +1469,7 @@ function AdminCamperEditForm({ camper, staffName, onDone }: { camper: CamperDoc;
 // ─── Counselor View ───────────────────────────────────────────────────────────
 
 function CounselorView({ staff }: { staff: StaffDoc }) {
-  const bunk = staff.bunkAssignment ?? "";
+  const bunks = staffBunks(staff);
   // Records-based period classes (Upper Camp) and tracks (Middle Camp) this
   // counselor leads — each drives an extra tab when present.
   const myClasses = useQuery(api.periodClasses.getForStaff, { staffId: staff._id });
@@ -1478,7 +1478,7 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
   const hasTracks = (myTracks ?? []).length > 0;
   const [view, setView] = useState<"bunk" | "periods" | "tracks">("bunk");
 
-  const tabs: { id: "bunk" | "periods" | "tracks"; label: string }[] = [{ id: "bunk", label: "My Bunk" }];
+  const tabs: { id: "bunk" | "periods" | "tracks"; label: string }[] = [{ id: "bunk", label: bunks.length > 1 ? "My Bunks" : "My Bunk" }];
   if (hasClasses) tabs.push({ id: "periods", label: "Periods" });
   if (hasTracks) tabs.push({ id: "tracks", label: "Tracks" });
 
@@ -1504,9 +1504,17 @@ function CounselorView({ staff }: { staff: StaffDoc }) {
   return (
     <div className="space-y-4">
       {tabSwitcher}
-      <CounselorBunkView staff={staff} bunk={bunk} />
+      <CounselorBunkView staff={staff} bunks={bunks} />
     </div>
   );
+}
+
+// The full set of bunks a counselor can see: their primary bunkAssignment plus
+// any extraBunks (deduped). Lets one counselor cover several bunks at once.
+function staffBunks(s: StaffDoc): string[] {
+  const primary = s.bunkAssignment ? [s.bunkAssignment] : [];
+  const extra = ((s as Record<string, unknown>).extraBunks as string[] | undefined) ?? [];
+  return [...new Set([...primary, ...extra])].filter(Boolean);
 }
 
 // A counselor's assigned Middle Camp tracks, with daily present/absent marking.
@@ -1550,10 +1558,11 @@ function MyTracksPanel({ staff }: { staff: StaffDoc }) {
   );
 }
 
-type BunkGroupKey = "none" | "status" | "dismissal" | "track";
+type BunkGroupKey = "none" | "status" | "dismissal" | "track" | "bunk";
 
 const BUNK_GROUP_OPTIONS: { key: BunkGroupKey; label: string }[] = [
   { key: "none",      label: "All" },
+  { key: "bunk",      label: "Bunk" },
   { key: "status",    label: "In / Out" },
   { key: "dismissal", label: "Dismissal" },
   { key: "track",     label: "Track" },
@@ -1575,6 +1584,8 @@ function bunkGroupKey(item: BunkRosterItem, groupBy: BunkGroupKey): string {
       return item.effectiveDismissal ?? c.dismissalMethod ?? "Other";
     case "track":
       return c.track ?? "No Track";
+    case "bunk":
+      return c.bunk || "No Bunk";
     default:
       return "";
   }
@@ -1594,11 +1605,15 @@ function groupBunkRoster(items: BunkRosterItem[], groupBy: BunkGroupKey): [strin
   return order.filter(k => map.has(k)).map(k => [k, map.get(k)!]);
 }
 
-function CounselorBunkView({ staff, bunk }: {
+function CounselorBunkView({ staff, bunks }: {
   staff: StaffDoc;
-  bunk: string;
+  bunks: string[];
 }) {
-  const roster        = useQuery(api.campers.getBunkRoster, bunk ? { bunk } : "skip");
+  // A counselor covering more than one bunk (e.g. Tennis 1 + Tennis 2) gets one
+  // tab per bunk (each with its own counts) plus a search box that finds any
+  // camper across all of their bunks.
+  const multi = bunks.length > 1;
+  const roster        = useQuery(api.campers.getBunkRosterMulti, bunks.length ? { bunks } : "skip");
   const todayOverrides = useQuery(api.dailyOverrides.getForDate, {});
   const setArrived    = useMutation(api.campers.confirmWithBunk);
   const setNotArrived = useMutation(api.campers.unconfirmWithBunk);
@@ -1608,10 +1623,12 @@ function CounselorBunkView({ staff, bunk }: {
   const markLunchPickedUp = useMutation(api.lunchRecords.markPickedUp);
   const [selected,  setSelected]  = useState<CamperDoc | null>(null);
   const [groupBy, setGroupBy] = useState<BunkGroupKey>("none");
+  const [search, setSearch] = useState("");
+  const [activeBunk, setActiveBunk] = useState(bunks[0] ?? "");
 
   const isAdmin = [staff.role, ...(staff.extraRoles ?? [])].some(r => r === "admin" || r === "director");
 
-  if (!bunk) return (
+  if (bunks.length === 0) return (
     <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
       No bunk assigned. Contact an administrator.
     </div>
@@ -1638,12 +1655,6 @@ function CounselorBunkView({ staff, bunk }: {
     return ov?.isAbsent === true || c.arrivalStatus === "Absent";
   };
 
-  const absentCount  = sorted.filter(c => isAbsentToday(c)).length;
-  const inCount      = sorted.filter(c => !isAbsentToday(c) && c.bunkConfirmed === true && c.leftEarly !== true).length;
-  const outCount     = sorted.filter(c => !isAbsentToday(c) && c.leftEarly === true).length;
-  const notInCount   = sorted.filter(c => !isAbsentToday(c) && c.bunkConfirmed !== true && c.leftEarly !== true).length;
-  const called       = roster.filter(c => c.status === "Called" || c.status === "Assigned");
-
   const toggleAM = (c: CamperDoc) => {
     if (isAbsentToday(c)) return;
     if (c.bunkConfirmed) setNotArrived({ id: c._id });
@@ -1655,12 +1666,47 @@ function CounselorBunkView({ staff, bunk }: {
     else             setOut({ id: c._id, staffName: staff.name });
   };
 
-  const groups = groupBunkRoster(items, groupBy);
+  // Active bunk tab (fall back to the first bunk if the assignment changed).
+  const currentBunk = bunks.includes(activeBunk) ? activeBunk : (bunks[0] ?? "");
+  const q = search.trim().toLowerCase();
+  const searching = multi && q.length > 0;
+
+  // While searching, match across ALL of this counselor's bunks; otherwise show
+  // just the active bunk tab. Single-bunk counselors always see their one bunk.
+  const baseItems = searching
+    ? items.filter(({ c }) => camperName(c).toLowerCase().includes(q) || (c.code ?? "").toLowerCase().includes(q))
+    : multi ? items.filter(({ c }) => c.bunk === currentBunk) : items;
+
+  // Counts + the called-for-pickup alert reflect exactly what's shown — so for a
+  // multi-bunk counselor the numbers are per bunk (the active tab).
+  const absentCount = baseItems.filter(i => i.isAbsent).length;
+  const inCount     = baseItems.filter(i => !i.isAbsent && i.arrived && !i.dismissed).length;
+  const outCount    = baseItems.filter(i => !i.isAbsent && i.dismissed).length;
+  const notInCount  = baseItems.filter(i => !i.isAbsent && !i.arrived && !i.dismissed).length;
+  const called      = baseItems.map(i => i.c).filter(c => c.status === "Called" || c.status === "Assigned");
+
+  const groups = groupBunkRoster(baseItems, groupBy);
 
   return (
     <>
       <div className="space-y-4">
-        <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>{bunk}</h2>
+        {/* One tab per bunk (multi-bunk counselors only) */}
+        {multi && (
+          <div className="flex gap-1.5 bg-white border border-slate-200 rounded-2xl p-1.5 overflow-x-auto">
+            {bunks.map(b => (
+              <button key={b} onClick={() => { setActiveBunk(b); setSearch(""); }}
+                className="flex-1 min-w-[110px] py-2.5 rounded-xl text-sm font-bold transition-colors whitespace-nowrap"
+                style={!searching && currentBunk === b
+                  ? { backgroundColor: "#023B64", color: "#fff" }
+                  : { color: "#64748b" }}>
+                {b}
+              </button>
+            ))}
+          </div>
+        )}
+        <h2 className="text-2xl font-bold" style={{ color: "#023B64" }}>
+          {searching ? "All bunks" : (multi ? currentBunk : bunks[0])}
+        </h2>
 
         {/* Summary strip */}
         <div className="flex gap-2">
@@ -1670,7 +1716,7 @@ function CounselorBunkView({ staff, bunk }: {
           {absentCount > 0 && <Pill value={absentCount} label="Absent" color="amber" />}
         </div>
         <p className="text-xs text-slate-500 text-center -mt-1">
-          {sorted.length} enrolled
+          {searching ? `${baseItems.length} found across all bunks` : `${baseItems.length} enrolled`}
         </p>
 
         {/* Called-for-pickup alert */}
@@ -1695,9 +1741,23 @@ function CounselorBunkView({ staff, bunk }: {
           </div>
         )}
 
+        {/* Search across all of this counselor's bunks */}
+        {multi && (
+          <div className="relative">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Search all campers by name or code…"
+              className="w-full border border-slate-200 rounded-xl pl-9 pr-3 py-2.5 text-sm focus:outline-none" />
+          </div>
+        )}
+
         {/* Group by selector */}
         <div className="flex gap-1.5 overflow-x-auto pb-1">
-          {BUNK_GROUP_OPTIONS.filter(opt => opt.key !== "track" || (roster ?? []).some(c => c.track)).map(opt => (
+          {BUNK_GROUP_OPTIONS.filter(opt => {
+            if (opt.key === "bunk") return false;  // per-bunk tabs replace bunk grouping
+            if (opt.key === "track") return (roster ?? []).some(c => c.track);
+            return true;
+          }).map(opt => (
             <button key={opt.key} onClick={() => setGroupBy(opt.key)}
               className="px-3.5 py-2 rounded-xl text-sm font-semibold transition-colors flex-shrink-0"
               style={groupBy === opt.key
@@ -1727,11 +1787,22 @@ function CounselorBunkView({ staff, bunk }: {
                   onToggleAM={() => toggleAM(c)}
                   onToggleOut={() => toggleOut(c)}
                   onToggleLunch={(rec) => markLunchPickedUp({ id: rec._id as never, pickedUp: !rec.pickedUp, staffId: staff.name })}
+                  showBunk={searching}
                 />
               ))}
             </div>
           </div>
         ))}
+        {searching && baseItems.length === 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-slate-500 text-sm">
+            No campers match “{search.trim()}”.
+          </div>
+        )}
+        {!searching && baseItems.length === 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-slate-500 text-sm">
+            No campers in {currentBunk || "this bunk"} yet.
+          </div>
+        )}
       </div>
 
       {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} hideCode staffName={staff.name} isAdmin={isAdmin} />}
@@ -1742,7 +1813,7 @@ function CounselorBunkView({ staff, bunk }: {
 // One roster row: identity + transport/flags inline, plus In / Out tap targets.
 type BunkLunchRecord = { _id: string; lunchType: "regular" | "alternate"; pickedUp?: boolean };
 
-function BunkCamperRow({ camper, isAbsent, arrived, dismissed, override, lunchRecord, canMarkLunch = false, onOpenProfile, onToggleAM, onToggleOut, onToggleLunch }: {
+function BunkCamperRow({ camper, isAbsent, arrived, dismissed, override, lunchRecord, canMarkLunch = false, showBunk = false, onOpenProfile, onToggleAM, onToggleOut, onToggleLunch }: {
   camper: CamperDoc;
   isAbsent: boolean;
   arrived: boolean;
@@ -1750,6 +1821,7 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, override, lunchRe
   override?: { isAbsent?: boolean; lateDropoffTime?: string; earlyPickupTime?: string; morningArrival?: string; afternoonDismissal?: string; note?: string };
   lunchRecord?: BunkLunchRecord;
   canMarkLunch?: boolean;   // only admins/office may mark lunch picked up; counselors see it read-only
+  showBunk?: boolean;       // label each row with its bunk (for multi-bunk counselors)
   onOpenProfile: () => void;
   onToggleAM: () => void;
   onToggleOut: () => void;
@@ -1808,6 +1880,9 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, override, lunchRe
               <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded-full flex items-center gap-0.5"><StickyNote size={9} />{override.note}</span>
             )}
             {isCalled && <StatusBadge status={camper.status} />}
+            {showBunk && camper.bunk && (
+              <span className="text-[10px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded-full tracking-wide">{camper.bunk}</span>
+            )}
             {lunchRecord && (
               <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full tracking-wide ${lunchRecord.lunchType === "alternate" ? "text-purple-700 bg-purple-100" : "text-orange-700 bg-orange-100"}`}>
                 {lunchRecord.lunchType === "alternate" ? "ALT LUNCH" : "ORDERS LUNCH"}
@@ -5919,7 +5994,7 @@ const STAFF_CSV_HEADERS = ["firstName","lastName","email","phone","primaryRole",
 type StaffFormData = {
   firstName: string; lastName: string; email: string; phone: string;
   code: string; role: Role; extraRoles: Role[];
-  bunkAssignment: string; unitAssignment: string; campSection: string;
+  bunkAssignment: string; extraBunks: string[]; unitAssignment: string; campSection: string;
   busRoute: string; camp: string; division: string;
   primaryJob: string; secondaryJob: string;
   canBeRunner: boolean; runnerLabel: string; isActive: boolean;
@@ -5927,7 +6002,7 @@ type StaffFormData = {
 
 const STAFF_BLANK: StaffFormData = {
   firstName: "", lastName: "", email: "", phone: "", code: "",
-  role: "counselor", extraRoles: [], bunkAssignment: "", unitAssignment: "",
+  role: "counselor", extraRoles: [], bunkAssignment: "", extraBunks: [], unitAssignment: "",
   campSection: "", busRoute: "", camp: "", division: "",
   primaryJob: "", secondaryJob: "",
   canBeRunner: false, runnerLabel: "", isActive: true,
@@ -5973,6 +6048,7 @@ function staffFormFromDoc(s: StaffDoc): StaffFormData {
     role: s.role as Role,
     extraRoles: (s.extraRoles ?? []) as Role[],
     bunkAssignment: s.bunkAssignment ?? "",
+    extraBunks: ((s as Record<string, unknown>).extraBunks as string[] | undefined) ?? [],
     unitAssignment: s.unitAssignment ?? "",
     campSection: s.campSection ?? "",
     busRoute: s.busRoute ?? "",
@@ -6031,6 +6107,10 @@ function StaffManagement() {
       role: form.role,
       extraRoles: form.extraRoles.length > 0 ? form.extraRoles : undefined,
       bunkAssignment: form.bunkAssignment || undefined,
+      extraBunks: (() => {
+        const extra = form.extraBunks.filter(b => b && b !== form.bunkAssignment);
+        return extra.length > 0 ? extra : undefined;
+      })(),
       unitAssignment: form.unitAssignment || undefined,
       campSection: form.campSection || undefined,
       busRoute: form.busRoute || undefined,
@@ -6568,6 +6648,32 @@ function StaffManagement() {
                     <option value="">Select bunk…</option>
                     {bunks.map(b => <option key={b} value={b}>{b}</option>)}
                   </select>
+                  {/* Extra bunks let one counselor cover several bunks at once —
+                      e.g. every tennis counselor on both Tennis 1 and Tennis 2. */}
+                  <div className="mt-2">
+                    <label className={lbl}>Additional Bunks (optional)</label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {bunks.filter(b => b !== form.bunkAssignment).map(b => {
+                        const on = form.extraBunks.includes(b);
+                        return (
+                          <button key={b} type="button"
+                            onClick={() => setForm({
+                              ...form,
+                              extraBunks: on ? form.extraBunks.filter(x => x !== b) : [...form.extraBunks, b],
+                            })}
+                            className="px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors border"
+                            style={on
+                              ? { backgroundColor: "#023B64", color: "#fff", borderColor: "#023B64" }
+                              : { color: "#64748b", backgroundColor: "#fff", borderColor: "#e2e8f0" }}>
+                            {b}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Counselor sees these bunks combined with a search box.
+                    </p>
+                  </div>
                 </div>
               )}
 

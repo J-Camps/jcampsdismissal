@@ -51,6 +51,26 @@ export const getBunkRoster = query({
   },
 });
 
+// Combined roster across several bunks (deduped by camper id). Backs the
+// counselor view when one counselor covers more than one bunk.
+export const getBunkRosterMulti = query({
+  args: { bunks: v.array(v.string()) },
+  handler: async (ctx, { bunks }) => {
+    const results = await Promise.all(
+      bunks.map((bunk) =>
+        ctx.db
+          .query("campers")
+          .withIndex("by_bunk", (q) => q.eq("bunk", bunk))
+          .collect(),
+      ),
+    );
+    // A camper only lives in one bunk, but dedupe by id defensively so an
+    // accidental duplicate bunk name can never list a camper twice.
+    const byId = new Map(results.flat().map((c) => [c._id, c] as const));
+    return [...byId.values()];
+  },
+});
+
 export const getBusRoutes = query({
   args: {},
   handler: async (ctx) => {
