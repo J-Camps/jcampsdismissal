@@ -83,6 +83,7 @@ export const STAFF_ROLE = v.union(
   v.literal("specialist"),
   v.literal("carline"),
   v.literal("walkup"),
+  v.literal("frontdesk"),
   v.literal("dispatcher"),
   v.literal("runner"),
   v.literal("director"),
@@ -109,6 +110,17 @@ export const PERIOD = v.union(
 // separate Friday schedule ("Friday") with a different set of periods/classes.
 // Records with no dayType are treated as "MonThu" for backward compatibility.
 export const DAY_TYPE = v.union(v.literal("MonThu"), v.literal("Friday"));
+
+// ── Day of week ────────────────────────────────────────────────────────────────
+// The bunk schedule board keeps a genuinely distinct schedule per weekday, so a
+// bunk's Monday can differ from its Wednesday (unlike the two-schedule dayType).
+export const DAY_OF_WEEK = v.union(
+  v.literal("Mon"),
+  v.literal("Tue"),
+  v.literal("Wed"),
+  v.literal("Thu"),
+  v.literal("Fri"),
+);
 
 export const PERIOD_ASSIGNMENT = v.object({
   period: PERIOD,
@@ -443,6 +455,27 @@ export default defineSchema({
     .index("by_camper", ["camperId"])
     .index("by_class", ["periodClassId"])
     .index("by_period", ["period"]),
+
+  // ── Bunk schedule (per weekday, per period activity for a whole bunk) ─────
+  // Powers the Schedule board. One row per bunk × weekday × period cell, so a
+  // bunk's Monday schedule is fully independent of its Wednesday. Populated by
+  // the weekly workbook upload (one sheet per bunk, days as columns).
+  bunkSchedule: defineTable({
+    bunk: v.string(),
+    dayOfWeek: DAY_OF_WEEK,
+    period: v.string(),             // "Period1".."Period7"
+    activity: v.string(),           // class / activity name for the cell
+    location: v.optional(v.string()),
+    source: v.optional(v.union(v.literal("upload"), v.literal("manual"))),
+    uploadBatchId: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+    updatedByStaffId: v.optional(v.string()),
+  })
+    .index("by_bunk", ["bunk"])
+    .index("by_bunk_day", ["bunk", "dayOfWeek"])
+    .index("by_day", ["dayOfWeek"])
+    .index("by_bunk_day_period", ["bunk", "dayOfWeek", "period"]),
 
   // ── Legacy period schedules (kept for backward compat) ──────────────────
   periodSchedules: defineTable({

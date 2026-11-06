@@ -1,16 +1,18 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, usePaginatedQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc } from "@/convex/_generated/dataModel";
+import * as XLSX from "xlsx";
 import {
   Car, Footprints, Radio, User, Settings, Lock, Search, RotateCcw,
   Check, ChevronRight, AlertCircle, Clock, MapPin,
   AlertTriangle, LogOut, ChevronDown, ChevronUp,
   X, Hash, BookOpen, Bus, ArrowRight, StickyNote,
   CheckCircle2, ChevronLeft, Upload, Users, Building2, Calendar, UtensilsCrossed,
-  Route, Moon, Drama,
+  Route, Moon, Drama, CalendarDays, Pencil, FileSpreadsheet,
+  History as HistoryIcon, Megaphone,
 } from "lucide-react";
 
 // ─── Brand colors (JCC Greater Boston) ───────────────────────────────────────
@@ -73,6 +75,17 @@ const today = () => new Date().toISOString().split("T")[0];
 
 // Which Upper Camp schedule today follows: Friday → "Friday", else "MonThu".
 const currentDayType = (): "MonThu" | "Friday" => (new Date().getDay() === 5 ? "Friday" : "MonThu");
+
+type DayOfWeek = "Mon" | "Tue" | "Wed" | "Thu" | "Fri";
+const DAYS_OF_WEEK: { id: DayOfWeek; label: string; full: string }[] = [
+  { id: "Mon", label: "Mon", full: "Monday" },
+  { id: "Tue", label: "Tue", full: "Tuesday" },
+  { id: "Wed", label: "Wed", full: "Wednesday" },
+  { id: "Thu", label: "Thu", full: "Thursday" },
+  { id: "Fri", label: "Fri", full: "Friday" },
+];
+// Today's weekday for the schedule board; weekends fall back to Monday.
+const currentDayOfWeek = (): DayOfWeek => (["Mon", "Mon", "Tue", "Wed", "Thu", "Fri", "Mon"] as DayOfWeek[])[new Date().getDay()];
 
 // ─── CSV export ───────────────────────────────────────────────────────────────
 // Serialize a single value for a CSV cell. Objects/arrays become JSON so nested
@@ -220,6 +233,7 @@ const ROLE_META: Record<string, { label: string; icon: React.ComponentType<{ siz
   runner:     { label: "Runner",       icon: User },
   carline:    { label: "Carline",      icon: Car },
   walkup:     { label: "Walk-Up",      icon: Footprints },
+  frontdesk:  { label: "Front Desk",   icon: Footprints },
   dispatcher: { label: "Dispatcher",   icon: Radio },
   beforecare: { label: "Before Care",  icon: Clock },
   aftercare:  { label: "After Care",   icon: Clock },
@@ -237,6 +251,7 @@ function renderRoleView(role: Role, staff: StaffDoc): React.ReactNode {
     case "runner":     return <RunnerViewForStaff staff={staff} />;
     case "carline":    return <Caller source="Carline" />;
     case "walkup":     return <Caller source="Walk-Up" />;
+    case "frontdesk":  return <Caller source="Walk-Up" title="Front Desk" allowLookup={false} />;
     case "dispatcher": return <Dispatcher />;
     case "beforecare": return <CareView staff={staff} kind="BeforeCare" />;
     case "aftercare":  return <CareView staff={staff} kind="AfterCare" />;
@@ -317,6 +332,7 @@ function MultiRoleShell({ staff, onLogout, roles }: { staff: StaffDoc; onLogout:
 function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => void }) {
   const labels: Record<string, string> = {
     counselor:"Counselor", specialist:"Specialist", carline:"Carline", walkup:"Walk-Up",
+    frontdesk:"Front Desk",
     dispatcher:"Dispatcher", runner:"Runner", director:"Director", admin:"Admin",
     beforecare:"Before Care", aftercare:"After Care", bus:"Bus", unithead:"Unit Head",
   };
@@ -337,7 +353,7 @@ function MobileHeader({ staff, onLogout }: { staff: StaffDoc; onLogout: () => vo
   );
 }
 
-type AdminSection = "campers" | "transport" | "extday" | "bunk" | "admin" | "staff" | "upload" | "structure" | "periods" | "tracks" | "lunch";
+type AdminSection = "campers" | "transport" | "extday" | "bunk" | "admin" | "staff" | "upload" | "structure" | "periods" | "tracks" | "lunch" | "schedule" | "history";
 type TransportSub = "carline" | "walkup" | "dispatcher" | "runner" | "bus";
 type ExtDaySub    = "beforecare" | "aftercare";
 
@@ -351,12 +367,14 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
     { id: "transport", label: "Transport",  icon: <Car size={18} /> },
     { id: "extday",    label: "Ext. Day",   icon: <Clock size={18} /> },
     { id: "bunk",      label: "Bunk",       icon: <BookOpen size={18} /> },
+    { id: "schedule",  label: "Schedule",   icon: <CalendarDays size={18} /> },
     { id: "admin",     label: "Admin",      icon: <Settings size={18} /> },
     { id: "structure", label: "Structure",  icon: <Building2 size={18} /> },
     { id: "staff",     label: "Staff",      icon: <User size={18} /> },
     { id: "periods",   label: "Periods",    icon: <Calendar size={18} /> },
     { id: "tracks",    label: "Tracks",     icon: <Route size={18} /> },
     { id: "lunch",     label: "Lunch",      icon: <UtensilsCrossed size={18} /> },
+    { id: "history",   label: "History",    icon: <HistoryIcon size={18} /> },
     { id: "upload",    label: "Upload",     icon: <Upload size={18} /> },
   ];
 
@@ -443,14 +461,210 @@ function MultiTabShell({ staff, onLogout }: { staff: StaffDoc; onLogout: () => v
 
         {section === "campers"  && <CamperDashboard staff={staff} />}
         {section === "bunk"     && <AdminBunkView staff={staff} />}
+        {section === "schedule" && <ScheduleView />}
         {section === "admin"    && <Admin />}
         {section === "structure" && <CampStructureManagement />}
         {section === "staff"    && <StaffManagement />}
         {section === "periods"  && <PeriodManagement />}
         {section === "tracks"   && <TrackManagement />}
         {section === "lunch"    && <LunchManagement />}
+        {section === "history"  && <HistoryView />}
         {section === "upload"   && <CamperUpload />}
       </main>
+    </div>
+  );
+}
+
+// ─── History (attendance action log) ──────────────────────────────────────────
+
+// Readable labels + colors for each raw checkpoint value stored in attendanceLogs.
+const CHECKPOINT_LABEL: Record<string, string> = {
+  Arrival: "Arrived", MorningBusIn: "On Morning Bus", MorningBusRoom: "Bus Room (AM)",
+  MorningBusSentToBunk: "Sent to Bunk", BeforeCare: "Before Care",
+  BunkConfirm: "Bunk Confirm",
+  Period1: "Period 1", Period2: "Period 2", Period3: "Period 3", Period4: "Period 4",
+  Period5: "Period 5", Period6: "Period 6", Period7: "Period 7",
+  BunkSentToAfterCare: "Sent to After Care", BunkSentToBusRoom: "Sent to Bus Room",
+  LeftEarly: "Left Early",
+  Called: "Called", AssignedRunner: "Assigned Runner", PickedUp: "Picked Up",
+  AfterCareIn: "After Care In", AfterCare: "After Care", AfterCareOut: "After Care Out",
+  AfternoonBusRoomIn: "Bus Room (PM)", AfternoonBusOnBoard: "Boarded Bus",
+  AfternoonBusAtStop: "At Bus Stop", Bus: "Bus",
+  SentToBus: "Sent to Bus", SentToAfterCare: "Sent to After Care", Lunch: "Lunch",
+};
+
+function checkpointLabel(cp: string): string {
+  return CHECKPOINT_LABEL[cp] ?? cp;
+}
+
+const CHECKPOINT_STYLE: Record<string, string> = {
+  Called: "bg-amber-100 text-amber-700", AssignedRunner: "bg-blue-100 text-blue-700",
+  PickedUp: "bg-violet-100 text-violet-700", BunkConfirm: "bg-emerald-100 text-emerald-700",
+  Arrival: "bg-emerald-100 text-emerald-700", LeftEarly: "bg-rose-100 text-rose-700",
+  Lunch: "bg-orange-100 text-orange-700",
+};
+
+// timestamp → "2:07:45 PM"
+function fmtLogTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+// "2026-08-10" → "Mon, Aug 10"
+function fmtLogDate(dateStr: string): string {
+  const d = new Date(dateStr + "T12:00:00");
+  if (Number.isNaN(d.getTime())) return dateStr;
+  return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+}
+
+function HistoryView() {
+  const [dateFilter, setDateFilter] = useState("");   // "" = all dates
+  const [search, setSearch] = useState("");
+
+  const { results, status, loadMore, isLoading } = usePaginatedQuery(
+    api.attendanceLogs.listPaged,
+    dateFilter ? { date: dateFilter } : {},
+    { initialNumItems: 100 },
+  );
+
+  const q = search.trim().toLowerCase();
+  const rows = useMemo(() => {
+    if (!q) return results;
+    return results.filter((r) => {
+      const hay = `${r.camperName} ${r.camperBunk ?? ""} ${r.staffName} ${r.status} ${checkpointLabel(r.checkpoint)}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [results, q]);
+
+  // Group visible rows by date for readable section headers.
+  const grouped = useMemo(() => {
+    const map = new Map<string, typeof rows>();
+    for (const r of rows) {
+      const arr = map.get(r.date) ?? [];
+      arr.push(r);
+      map.set(r.date, arr);
+    }
+    return Array.from(map.entries());
+  }, [rows]);
+
+  function exportXlsx() {
+    const data = rows.map((r) => ({
+      Date: r.date,
+      Time: fmtLogTime(r.timestamp),
+      Camper: r.camperName,
+      Bunk: r.camperBunk ?? "",
+      Action: r.status,
+      Checkpoint: checkpointLabel(r.checkpoint),
+      Staff: r.staffName,
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "History");
+    XLSX.writeFile(wb, `history-${dateFilter || "all"}.xlsx`);
+  }
+
+  return (
+    <div>
+      <div className="mb-4">
+        <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+          <HistoryIcon size={20} /> History
+        </h2>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Every logged attendance & dismissal action, newest first.
+        </p>
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="relative flex-1 min-w-[160px]">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search camper, bunk, staff, action…"
+            className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-slate-300"
+          />
+        </div>
+        <input
+          type="date"
+          value={dateFilter}
+          onChange={(e) => setDateFilter(e.target.value)}
+          className="px-3 py-2 text-sm rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-slate-300"
+        />
+        {dateFilter && (
+          <button
+            onClick={() => setDateFilter("")}
+            className="px-3 py-2 text-xs font-semibold text-slate-600 rounded-xl border border-slate-200 bg-white active:bg-slate-50"
+          >
+            All dates
+          </button>
+        )}
+        <button
+          onClick={exportXlsx}
+          disabled={rows.length === 0}
+          className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-white rounded-xl disabled:opacity-40"
+          style={{ backgroundColor: "#023B64" }}
+        >
+          <FileSpreadsheet size={14} /> Export
+        </button>
+      </div>
+
+      <div className="text-xs text-slate-500 mb-2">
+        {rows.length} shown{q && ` (filtered)`}
+      </div>
+
+      {/* Rows */}
+      {grouped.length === 0 && !isLoading && (
+        <div className="text-center text-sm text-slate-400 py-12">No history records.</div>
+      )}
+
+      <div className="space-y-4">
+        {grouped.map(([date, dayRows]) => (
+          <div key={date}>
+            <div className="sticky top-24 z-10 text-xs font-bold text-slate-500 bg-[#F6F1E9] py-1">
+              {fmtLogDate(date)}
+            </div>
+            <div className="bg-white border border-slate-200 rounded-2xl divide-y divide-slate-100 overflow-hidden">
+              {dayRows.map((r) => (
+                <div key={r._id} className="flex items-start gap-3 px-3 py-2.5">
+                  <span className="text-[11px] font-mono text-slate-400 w-20 flex-shrink-0 pt-0.5 tabular-nums">
+                    {fmtLogTime(r.timestamp)}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold text-slate-800">{r.camperName}</span>
+                      {r.camperBunk && (
+                        <span className="text-[10px] text-slate-400">{r.camperBunk}</span>
+                      )}
+                      <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${CHECKPOINT_STYLE[r.checkpoint] ?? "bg-slate-100 text-slate-600"}`}>
+                        {checkpointLabel(r.checkpoint)}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-0.5 break-words">{r.status}</div>
+                  </div>
+                  <span className="text-[10px] text-slate-400 flex-shrink-0 pt-0.5 max-w-[90px] truncate text-right">
+                    {r.staffName}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Load more — only meaningful when not filtering to a single loaded set */}
+      {status === "CanLoadMore" && (
+        <button
+          onClick={() => loadMore(100)}
+          className="w-full mt-4 py-2.5 text-sm font-semibold text-slate-600 rounded-xl border border-slate-200 bg-white active:bg-slate-50"
+        >
+          Load more
+        </button>
+      )}
+      {isLoading && (
+        <div className="text-center text-sm text-slate-400 py-6">Loading…</div>
+      )}
+      {status === "Exhausted" && rows.length > 0 && (
+        <div className="text-center text-xs text-slate-400 py-4">— End of history —</div>
+      )}
     </div>
   );
 }
@@ -2333,9 +2547,20 @@ function InOutCamperRow({
   const arrived = !!camper.dailyCheckpoints?.[checkpoint];
   const dismissed = !!camper.dailyCheckpointsOut?.[checkpoint];
   const locked = isAbsent || !!stayLate;
+  // After Care: a camper whose family has arrived at carline/front desk is
+  // "Called". Flag them here (unless already sent out) so After Care staff know
+  // to send them to pickup. Reactive — appears the instant the caller hits Call.
+  const calledForPickup =
+    checkpoint === "AfterCare" &&
+    !dismissed &&
+    (camper.status === "Called" || camper.status === "Assigned");
 
   return (
-    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${isAbsent ? "border-slate-200 opacity-60" : stayLate ? "border-violet-200 opacity-70" : "border-slate-200"}`}>
+    <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${
+      calledForPickup ? "border-amber-400 ring-2 ring-amber-300"
+      : isAbsent ? "border-slate-200 opacity-60"
+      : stayLate ? "border-violet-200 opacity-70"
+      : "border-slate-200"}`}>
       {/* Info area → opens profile */}
       <button onClick={onOpenProfile} className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-slate-50">
         <div className="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0 font-bold text-lg text-white overflow-hidden"
@@ -2347,6 +2572,11 @@ function InOutCamperRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="font-semibold text-slate-900 text-xl leading-tight">{name}</span>
+            {calledForPickup && (
+              <span className="text-[10px] font-bold text-white bg-amber-500 px-1.5 py-0.5 rounded-full tracking-wide flex items-center gap-0.5 animate-pulse">
+                <Megaphone size={9} />{camper.status === "Assigned" ? "ON THE WAY" : "CALLED — SEND TO PICKUP"}
+              </span>
+            )}
             {camper.hasAllergies && (
               <span className="text-[10px] font-bold text-red-700 bg-red-100 px-1.5 py-0.5 rounded-full tracking-wide">ALLERGY</span>
             )}
@@ -2506,6 +2736,15 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   const outCount    = todayRoster.filter(c => !skip(c) && c.dailyCheckpoints?.[kind] && c.dailyCheckpointsOut?.[kind]).length;
   const notInCount  = todayRoster.filter(c => !skip(c) && !c.dailyCheckpoints?.[kind]).length;
 
+  // After Care only: campers whose family has arrived (Called/Assigned at
+  // carline or front desk) and who haven't been sent out yet. This drives the
+  // live "called for pickup" alert so After Care staff know to send them out.
+  const calledForPickup = isBefore ? [] : todayRoster.filter(c =>
+    !skip(c) &&
+    !c.dailyCheckpointsOut?.[kind] &&
+    (c.status === "Called" || c.status === "Assigned")
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
@@ -2554,6 +2793,25 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
       <p className="text-xs text-slate-500 text-center -mt-1">
         {todayRoster.length} enrolled
       </p>
+
+      {/* Live pickup alert — a camper here has been called at carline/front desk */}
+      {calledForPickup.length > 0 && (
+        <div className="bg-amber-50 border-2 border-amber-400 rounded-2xl px-4 py-3 space-y-2 animate-pulse">
+          <div className="flex items-center gap-2">
+            <Megaphone size={18} className="text-amber-600 flex-shrink-0" />
+            <span className="text-sm font-bold text-amber-800">
+              {calledForPickup.length === 1 ? "1 camper called for pickup" : `${calledForPickup.length} campers called for pickup`}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {calledForPickup.map(c => (
+              <span key={c._id} className="text-xs font-bold text-amber-900 bg-amber-200 px-2.5 py-1 rounded-full">
+                {camperName(c)}{c.status === "Assigned" ? " · on the way" : ""}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {removedToday.length > 0 && (
         <div className="space-y-2">
@@ -3272,14 +3530,587 @@ function Pill({ value, label, color }: { value: number; label: string; color: "g
   );
 }
 
+// ─── Schedule Board ────────────────────────────────────────────────────────────
+// Camp-wide schedule: periods (rows) × every bunk (columns, grouped by camp),
+// showing which class each bunk is in. Middle Camp bunks run an all-day track
+// instead of per-period classes, rendered as one cell spanning every period.
+
+// Optional clock time per period, shown under the period label. Left empty
+// because no times are stored in the data yet — fill these in to display them.
+const PERIOD_TIME: Record<string, string> = {
+  // Period1: "9:15", Period2: "10:00", …
+};
+
+type EditCell = { bunk: string; displayName: string; period: string; activity: string; location: string };
+
+function ScheduleView() {
+  const [day, setDay] = useState<DayOfWeek>(currentDayOfWeek());
+  const [camp, setCamp] = useState<string>("all");
+  const [mode, setMode] = useState<"board" | "upload">("board");
+  const [editing, setEditing] = useState(false);
+  const [editCell, setEditCell] = useState<EditCell | null>(null);
+  const grid = useQuery(api.bunkSchedule.gridForDay, { dayOfWeek: day });
+
+  const btn = (active: boolean) =>
+    active
+      ? { backgroundColor: "#023B64", color: "#fff", borderColor: "#023B64" }
+      : { color: "#64748b", borderColor: "#e2e8f0", backgroundColor: "#fff" };
+
+  return (
+    <div className="space-y-4">
+      {/* Header actions */}
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-lg font-bold" style={{ color: "#023B64" }}>Schedule</h2>
+        <div className="flex gap-1.5">
+          <button onClick={() => { setMode("board"); setEditing(e => !e); }}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors"
+            style={btn(editing)}>
+            <Pencil size={13} /> {editing ? "Done" : "Edit"}
+          </button>
+          <button onClick={() => { setMode(m => (m === "upload" ? "board" : "upload")); setEditing(false); }}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors"
+            style={btn(mode === "upload")}>
+            <Upload size={13} /> Upload week
+          </button>
+        </div>
+      </div>
+
+      {mode === "upload" ? (
+        <WeekUpload onClose={() => setMode("board")} />
+      ) : (
+        <ScheduleBoard
+          grid={grid} day={day} setDay={setDay} camp={camp} setCamp={setCamp}
+          editing={editing} onEditCell={setEditCell}
+        />
+      )}
+
+      {editCell && <ScheduleCellEditor day={day} cell={editCell} onClose={() => setEditCell(null)} />}
+    </div>
+  );
+}
+
+type GridForDay = NonNullable<ReturnType<typeof useQuery<typeof api.bunkSchedule.gridForDay>>>;
+
+function ScheduleBoard({ grid, day, setDay, camp, setCamp, editing, onEditCell }: {
+  grid: GridForDay | undefined;
+  day: DayOfWeek; setDay: (d: DayOfWeek) => void;
+  camp: string; setCamp: (c: string) => void;
+  editing: boolean; onEditCell: (c: EditCell) => void;
+}) {
+  const cornerBase = "sticky left-0 bg-white border-r border-slate-200 px-3 py-2 text-left";
+  const bunkColW = 138;
+
+  const camps = grid ? ([...new Set(grid.bunks.map(b => b.camp).filter(Boolean))] as string[]) : [];
+  const bunks = !grid ? [] : camp === "all" ? grid.bunks : grid.bunks.filter(b => b.camp === camp);
+
+  // Contiguous camp runs → the grouped header row across the top.
+  const groups: { camp: string; span: number }[] = [];
+  for (const b of bunks) {
+    const label = b.camp ?? "Other";
+    const last = groups[groups.length - 1];
+    if (last && last.camp === label) last.span++;
+    else groups.push({ camp: label, span: 1 });
+  }
+
+  // Bunks whose campers run an all-day track (no per-period classes). Their
+  // activity cell spans every period row, emitted once on the first row. When
+  // editing, we don't span — every cell must be individually tappable.
+  const allDay = new Set(
+    grid && !editing
+      ? bunks.filter(b => b.tracks.length > 0 && grid.periods.every(p => b.periods[p].length === 0)).map(b => b.bunk)
+      : [],
+  );
+
+  return (
+    <>
+      {/* Weekday tabs — each day is its own schedule. Defaults to today. */}
+      <div className="flex gap-1 bg-slate-100 rounded-2xl p-1.5">
+        {DAYS_OF_WEEK.map(d => {
+          const isToday = currentDayOfWeek() === d.id;
+          return (
+            <button key={d.id} onClick={() => setDay(d.id)}
+              className="flex-1 py-2 rounded-xl text-sm font-bold transition-colors relative"
+              style={day === d.id ? { backgroundColor: "#F59E0B", color: "#fff" } : { color: "#64748b" }}>
+              {d.label}
+              {isToday && <span className="absolute top-1 right-1.5 w-1.5 h-1.5 rounded-full"
+                style={{ backgroundColor: day === d.id ? "#fff" : "#F59E0B" }} />}
+            </button>
+          );
+        })}
+      </div>
+
+      {editing && (
+        <div className="rounded-xl px-3 py-2 text-xs font-semibold text-center"
+          style={{ backgroundColor: "#FEF3C7", color: "#92400E" }}>
+          Tap any cell to set what that bunk is doing this period.
+        </div>
+      )}
+
+      {/* Camp filter */}
+      {camps.length > 1 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+          {["all", ...camps].map(c => (
+            <button key={c} onClick={() => setCamp(c)}
+              className="flex-shrink-0 px-3.5 py-1.5 rounded-full text-xs font-semibold transition-colors whitespace-nowrap border"
+              style={camp === c
+                ? { backgroundColor: "#023B64", color: "#fff", borderColor: "#023B64" }
+                : { color: "#64748b", borderColor: "#e2e8f0", backgroundColor: "#fff" }}>
+              {c === "all" ? "All Camps" : c}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {grid === undefined ? (
+        <Loading />
+      ) : bunks.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center text-slate-500">
+          No bunks to show.
+        </div>
+      ) : (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="border-collapse text-sm" style={{ minWidth: "100%" }}>
+              <thead>
+                {/* Camp group header */}
+                <tr>
+                  <th className={`${cornerBase} border-b z-30`} style={{ minWidth: 96, backgroundColor: "#023B64" }} />
+                  {groups.map((g, gi) => (
+                    <th key={g.camp + gi} colSpan={g.span}
+                      className="px-3 py-1.5 border-b border-l border-slate-200 text-center text-white font-bold whitespace-nowrap"
+                      style={{ backgroundColor: "#023B64" }}>
+                      {g.camp}
+                    </th>
+                  ))}
+                </tr>
+                {/* Bunk names */}
+                <tr>
+                  <th className={`${cornerBase} border-b z-30 font-bold`} style={{ minWidth: 96, color: "#023B64" }}>
+                    Period
+                  </th>
+                  {bunks.map(b => (
+                    <th key={b.bunk} className="px-2 py-2 border-b border-l border-slate-200 text-center align-bottom bg-white"
+                      style={{ minWidth: bunkColW }}>
+                      <div className="font-bold text-slate-900 leading-tight">{b.displayName}</div>
+                      <div className="text-[10px] text-slate-400 font-medium">{b.camperCount}</div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {grid.periods.map((p, pi) => (
+                  <tr key={p} className={pi % 2 ? "bg-slate-50/40" : ""}>
+                    <th className={`${cornerBase} border-b align-top z-20 ${pi % 2 ? "bg-[#fbfaf7]" : "bg-white"}`}
+                      style={{ minWidth: 96 }}>
+                      <div className="font-bold leading-tight" style={{ color: "#023B64" }}>
+                        {(PERIOD_LABEL[p] ?? p).replace("Period ", "P")}
+                      </div>
+                      {PERIOD_TIME[p] && <div className="text-[10px] text-slate-400 font-medium">{PERIOD_TIME[p]}</div>}
+                    </th>
+
+                    {bunks.map(b => {
+                      if (allDay.has(b.bunk)) {
+                        if (pi !== 0) return null; // covered by the rowSpan cell below
+                        return (
+                          <td key={b.bunk} rowSpan={grid.periods.length}
+                            className="px-2 py-2 border-b border-l border-slate-200 align-middle"
+                            style={{ minWidth: bunkColW }}>
+                            <div className="flex flex-col items-stretch gap-1">
+                              <span className="text-[10px] font-bold uppercase tracking-wide text-amber-600 text-center">All day</span>
+                              {b.tracks.map(t => (
+                                <ScheduleChip key={t.name} title={t.name} sub={t.location} count={t.count} accent="amber" />
+                              ))}
+                            </div>
+                          </td>
+                        );
+                      }
+                      const cells = b.periods[p];
+                      const open = () => onEditCell({
+                        bunk: b.bunk, displayName: b.displayName, period: p,
+                        activity: cells[0]?.className ?? "", location: cells[0]?.location ?? "",
+                      });
+                      return (
+                        <td key={b.bunk} className="border-b border-l border-slate-200 align-top text-center"
+                          style={{ minWidth: bunkColW }}>
+                          {editing ? (
+                            <button onClick={open}
+                              className="w-full h-full px-2 py-2 flex flex-col gap-1 items-stretch text-left rounded-lg active:bg-slate-100">
+                              {cells.length === 0 ? (
+                                <span className="text-slate-300 border border-dashed border-slate-300 rounded-lg py-1.5 text-center">+ Add</span>
+                              ) : (
+                                cells.map(c => <ScheduleChip key={c.className} title={c.className} sub={c.location} count={c.count} accent="navy" />)
+                              )}
+                            </button>
+                          ) : (
+                            <div className="px-2 py-2">
+                              {cells.length === 0 ? (
+                                <span className="text-slate-300">—</span>
+                              ) : (
+                                <div className="flex flex-col gap-1 items-stretch">
+                                  {cells.map(c => <ScheduleChip key={c.className} title={c.className} sub={c.location} count={c.count} accent="navy" />)}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <p className="text-xs text-slate-400 text-center">
+        Numbers show how many of a bunk&apos;s campers are in each activity. Swipe sideways to see every bunk.
+      </p>
+    </>
+  );
+}
+
+function ScheduleChip({ title, sub, count, accent }: { title: string; sub?: string; count: number; accent: "navy" | "amber" }) {
+  const style = accent === "amber"
+    ? { backgroundColor: "#FEF3C7", color: "#92400E", borderColor: "#FDE68A" }
+    : { backgroundColor: "#EFF3F7", color: "#023B64", borderColor: "#DCE4EC" };
+  return (
+    <div className="rounded-lg border px-2 py-1 leading-tight text-left" style={style}>
+      <div className="flex items-baseline justify-between gap-1.5">
+        <span className="font-semibold text-[12px] truncate">{title}</span>
+        <span className="text-[10px] font-bold opacity-70 flex-shrink-0">{count}</span>
+      </div>
+      {sub && <div className="text-[10px] opacity-60 truncate">{sub}</div>}
+    </div>
+  );
+}
+
+// Edit a single bunk × day × period cell of the schedule board.
+function ScheduleCellEditor({ day, cell, onClose }: { day: DayOfWeek; cell: EditCell; onClose: () => void }) {
+  const setCell = useMutation(api.bunkSchedule.setCell);
+  const [activity, setActivity] = useState(cell.activity);
+  const [location, setLocation] = useState(cell.location);
+  const [busy, setBusy] = useState(false);
+  const inp = "w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none";
+  const lbl = "text-xs font-semibold text-slate-500 mb-1 block";
+  const dayFull = DAYS_OF_WEEK.find(d => d.id === day)?.full ?? day;
+  const periodLabel = PERIOD_LABEL[cell.period] ?? cell.period;
+
+  const write = async (act: string) => {
+    setBusy(true);
+    try {
+      await setCell({ bunk: cell.bunk, dayOfWeek: day, period: cell.period, activity: act, location: act ? (location.trim() || undefined) : undefined });
+      onClose();
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative bg-white rounded-t-3xl overflow-auto max-h-[85vh]">
+        <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1 bg-slate-200 rounded-full" /></div>
+        <div className="px-5 pt-2 pb-6 space-y-4">
+          <div>
+            <h3 className="text-lg font-bold text-slate-900">{cell.displayName}</h3>
+            <p className="text-slate-500 text-sm">{dayFull} · {periodLabel}</p>
+          </div>
+          <div>
+            <label className={lbl}>Activity</label>
+            <input autoFocus value={activity} onChange={e => setActivity(e.target.value)} className={inp} placeholder="e.g. Swim" />
+          </div>
+          <div>
+            <label className={lbl}>Location</label>
+            <input value={location} onChange={e => setLocation(e.target.value)} className={inp} placeholder="e.g. Pool" />
+          </div>
+          <div className="flex gap-2">
+            {cell.activity && (
+              <button disabled={busy} onClick={() => write("")}
+                className="px-4 py-3 text-sm font-bold text-red-500 rounded-xl active:bg-red-50 border border-slate-200">
+                Clear
+              </button>
+            )}
+            <button disabled={busy || !activity.trim()} onClick={() => write(activity.trim())}
+              className="flex-1 py-3 text-sm font-bold text-white rounded-xl disabled:opacity-40" style={{ backgroundColor: "#023B64" }}>
+              {busy ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Week upload (multi-tab Excel workbook → bunk schedule) ──────────────────────
+// The source workbook has one sheet per bunk; within a sheet, weekdays are
+// columns and periods are rows, each cell an activity. We auto-detect the header
+// row (the one naming the days) and the period-label column, resolve each sheet
+// name to one or more bunks, and preview everything before committing.
+
+type UploadRow = { bunk: string; dayOfWeek: DayOfWeek; period: string; activity: string };
+type SheetSummary = { sheetName: string; targets: string[]; via: "alias" | "match" | "raw"; days: DayOfWeek[]; cellCount: number; note?: string };
+
+// Tabs that don't map 1:1 to a bunk. A matching tab is copied into every listed
+// bunk (copy-on-upload). Camp-specific — edit here when groups change.
+const SCHEDULE_TAB_ALIASES: { label: string; test: (norm: string) => boolean; bunks: string[] }[] = [
+  { label: "Tennis",       test: n => n.includes("tennis"),                    bunks: ["Jesse", "Sela"] },
+  { label: "Sports Lower", test: n => n.includes("sport") && n.includes("lower"), bunks: ["Amare"] },
+  { label: "Sports Upper", test: n => n.includes("sport") && n.includes("upper"), bunks: ["Sasha"] },
+];
+
+const DAY_ALIASES: Record<string, DayOfWeek> = {
+  mon: "Mon", monday: "Mon",
+  tue: "Tue", tues: "Tue", tuesday: "Tue",
+  wed: "Wed", weds: "Wed", wednesday: "Wed",
+  thu: "Thu", thur: "Thu", thurs: "Thu", thursday: "Thu",
+  fri: "Fri", friday: "Fri",
+};
+const parseDayName = (s: string): DayOfWeek | null => DAY_ALIASES[s.toLowerCase().replace(/[^a-z]/g, "")] ?? null;
+
+// Period label → "PeriodN". Prefers an explicit 1–7 in the label; otherwise uses
+// the row's running position. Time-style labels ("9:15") fall back to position.
+const parsePeriodLabel = (label: string, seq: number): string | null => {
+  const clean = label.trim();
+  if (clean && !clean.includes(":")) {
+    const m = clean.toLowerCase().match(/(?:period|p)?\s*([1-7])\b/);
+    if (m) return `Period${m[1]}`;
+  }
+  return seq >= 1 && seq <= 7 ? `Period${seq}` : null;
+};
+
+const normBunk = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+function WeekUpload({ onClose }: { onClose: () => void }) {
+  const structure = useQuery(api.campStructure.list);
+  const camperBunks = useQuery(api.campers.getBunks);
+  const weeklyUpload = useMutation(api.bunkSchedule.weeklyUpload);
+
+  const [rows, setRows] = useState<UploadRow[] | null>(null);
+  const [sheets, setSheets] = useState<SheetSummary[]>([]);
+  const [fileName, setFileName] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ created: number; updated: number; cleared: number } | null>(null);
+
+  // Canonical bunk names (campStructure first, then any camper-only bunks).
+  const knownBunks = useMemo(() => {
+    const names = new Set<string>();
+    (structure ?? []).forEach(s => { if (s.isActive !== false) names.add(s.bunk); });
+    (camperBunks ?? []).forEach(b => names.add(b));
+    return [...names];
+  }, [structure, camperBunks]);
+
+  const matchBunk = (sheetName: string): string | null => {
+    const n = normBunk(sheetName);
+    if (!n) return null;
+    const exact = knownBunks.find(b => normBunk(b) === n);
+    if (exact) return exact;
+    const partial = knownBunks.find(b => { const bn = normBunk(b); return bn.includes(n) || n.includes(bn); });
+    return partial ?? null;
+  };
+
+  // A tab resolves to one or more target bunks: an alias tab fans out to its
+  // listed bunks; otherwise we fuzzy-match a single bunk, falling back to the raw
+  // tab name (a new bunk).
+  const resolveTargets = (sheetName: string): { bunks: string[]; via: "alias" | "match" | "raw" } => {
+    const n = normBunk(sheetName);
+    const alias = SCHEDULE_TAB_ALIASES.find(a => a.test(n));
+    if (alias) return { bunks: alias.bunks, via: "alias" };
+    const m = matchBunk(sheetName);
+    if (m) return { bunks: [m], via: "match" };
+    return { bunks: [sheetName.trim()], via: "raw" };
+  };
+
+  const handleFile = async (file: File) => {
+    setError(""); setResult(null); setRows(null); setSheets([]); setFileName(file.name);
+    try {
+      const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const allRows: UploadRow[] = [];
+      const summaries: SheetSummary[] = [];
+
+      for (const sheetName of wb.SheetNames) {
+        const aoa = XLSX.utils.sheet_to_json<string[]>(wb.Sheets[sheetName], { header: 1, blankrows: false, defval: "" });
+        const { bunks: targetBunks, via } = resolveTargets(sheetName);
+
+        // Find the header row (the one naming ≥2 distinct weekdays).
+        let headerRow = -1;
+        let dayCols: { col: number; day: DayOfWeek }[] = [];
+        for (let r = 0; r < Math.min(aoa.length, 8); r++) {
+          const found: { col: number; day: DayOfWeek }[] = [];
+          const seenDays = new Set<DayOfWeek>();
+          (aoa[r] ?? []).forEach((cell, c) => {
+            const d = parseDayName(String(cell ?? ""));
+            if (d && !seenDays.has(d)) { seenDays.add(d); found.push({ col: c, day: d }); }
+          });
+          if (found.length >= 2) { headerRow = r; dayCols = found; break; }
+        }
+
+        if (headerRow === -1) {
+          summaries.push({ sheetName, targets: targetBunks, via, days: [], cellCount: 0, note: "No weekday header found — skipped" });
+          continue;
+        }
+
+        // Period-label column: first column that isn't a day column.
+        const dayColSet = new Set(dayCols.map(d => d.col));
+        const maxCols = Math.max(...aoa.map(r => r.length), 1);
+        let periodCol = 0;
+        for (let c = 0; c < maxCols; c++) { if (!dayColSet.has(c)) { periodCol = c; break; } }
+
+        let seq = 0;
+        let cellCount = 0;
+        for (let r = headerRow + 1; r < aoa.length; r++) {
+          const row = aoa[r] ?? [];
+          const label = String(row[periodCol] ?? "").trim();
+          const hasActivity = dayCols.some(({ col }) => String(row[col] ?? "").trim() !== "");
+          if (!label && !hasActivity) continue;
+          seq++;
+          const period = parsePeriodLabel(label, seq);
+          if (!period) continue;
+          for (const { col, day } of dayCols) {
+            const activity = String(row[col] ?? "").trim();
+            if (!activity) continue;
+            cellCount++;
+            // Fan the cell out to every target bunk (alias tabs feed several).
+            for (const bunk of targetBunks) allRows.push({ bunk, dayOfWeek: day, period, activity });
+          }
+        }
+
+        summaries.push({
+          sheetName, targets: targetBunks, via, days: dayCols.map(d => d.day), cellCount,
+          note: cellCount === 0 ? "No activities found" : undefined,
+        });
+      }
+
+      if (allRows.length === 0) {
+        setError("Couldn't read any schedule cells from that file. Check that each tab has weekday columns and period rows.");
+        setSheets(summaries);
+        return;
+      }
+      setRows(allRows);
+      setSheets(summaries);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to read the file.");
+    }
+  };
+
+  const commit = async () => {
+    if (!rows) return;
+    setBusy(true); setError("");
+    try {
+      const res = await weeklyUpload({ rows, replaceBunks: true });
+      setResult(res);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Upload failed.");
+    } finally { setBusy(false); }
+  };
+
+  const totalCells = rows?.length ?? 0;
+  const bunkCount = new Set(sheets.filter(s => s.cellCount > 0).flatMap(s => s.targets)).size;
+  const unmatched = sheets.filter(s => s.via === "raw" && s.cellCount > 0);
+
+  if (result) {
+    return (
+      <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-3">
+        <CheckCircle2 size={40} className="mx-auto text-green-500" />
+        <h3 className="text-lg font-bold text-slate-900">Schedule uploaded</h3>
+        <p className="text-slate-500 text-sm">
+          {result.created} added, {result.updated} updated{result.cleared ? `, ${result.cleared} replaced` : ""}.
+        </p>
+        <button onClick={onClose} className="mt-2 px-5 py-2.5 text-sm font-bold text-white rounded-xl" style={{ backgroundColor: "#023B64" }}>
+          View board
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
+        <div className="flex items-start gap-3">
+          <FileSpreadsheet size={22} className="text-slate-400 flex-shrink-0 mt-0.5" />
+          <div className="text-sm text-slate-600">
+            <p className="font-semibold text-slate-900">Upload a weekly schedule workbook</p>
+            <p className="text-xs text-slate-500 mt-0.5">
+              One tab per bunk, weekdays as columns, periods as rows. Re-uploading a bunk replaces its whole week.
+            </p>
+          </div>
+        </div>
+        <label className="block">
+          <span className="sr-only">Choose file</span>
+          <input type="file" accept=".xlsx,.xls,.csv" onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
+            className="block w-full text-sm text-slate-500 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-bold file:text-white file:cursor-pointer file:bg-[#023B64]" />
+        </label>
+        {fileName && <p className="text-xs text-slate-400">{fileName}</p>}
+        {error && <p className="text-sm text-red-500 font-medium">{error}</p>}
+      </div>
+
+      {rows && (
+        <>
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-100 flex items-baseline justify-between">
+              <span className="font-bold text-slate-900 text-sm">{totalCells} cells · {bunkCount} bunks</span>
+              <span className="text-xs text-slate-400">Preview</span>
+            </div>
+            <div className="max-h-72 overflow-auto divide-y divide-slate-100">
+              {sheets.map(s => {
+                const label = s.targets.join(", ");
+                const showTab = s.via !== "match" || s.targets[0] !== s.sheetName;
+                return (
+                  <div key={s.sheetName} className="px-4 py-2.5 flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-semibold text-sm text-slate-900 truncate">{label}</span>
+                        {s.via === "alias" && s.cellCount > 0 && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700">{s.targets.length > 1 ? "shared" : "mapped"}</span>
+                        )}
+                        {s.via === "raw" && s.cellCount > 0 && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700">new bunk</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-400 truncate">
+                        {showTab ? `tab "${s.sheetName}" · ` : ""}
+                        {s.note ?? `${s.days.join(" ")} · ${s.cellCount} cells`}
+                      </p>
+                    </div>
+                    {s.cellCount > 0
+                      ? <CheckCircle2 size={16} className="text-green-500 flex-shrink-0" />
+                      : <AlertCircle size={16} className="text-slate-300 flex-shrink-0" />}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {unmatched.length > 0 && (
+            <div className="rounded-xl px-3 py-2 text-xs font-medium" style={{ backgroundColor: "#FEF3C7", color: "#92400E" }}>
+              {unmatched.length} tab{unmatched.length > 1 ? "s" : ""} didn&apos;t match a known bunk and will be added as new bunk name{unmatched.length > 1 ? "s" : ""}: {unmatched.map(s => s.sheetName).join(", ")}.
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <button onClick={() => { setRows(null); setSheets([]); setFileName(""); }}
+              className="px-4 py-3 text-sm font-bold text-slate-500 rounded-xl border border-slate-200 active:bg-slate-50">
+              Cancel
+            </button>
+            <button disabled={busy} onClick={commit}
+              className="flex-1 py-3 text-sm font-bold text-white rounded-xl disabled:opacity-50" style={{ backgroundColor: "#023B64" }}>
+              {busy ? "Uploading…" : `Import ${totalCells} cells`}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Caller ───────────────────────────────────────────────────────────────────
 
-function Caller({ source }: { source: "Carline" | "Walk-Up" }) {
+function Caller({ source, title, allowLookup = true }: { source: "Carline" | "Walk-Up"; title?: string; allowLookup?: boolean }) {
   const [entry, setEntry] = useState("");
   const [selected, setSelected] = useState<CamperDoc | null>(null);
   const [lookupOpen, setLookupOpen] = useState(false);
   const matched    = useQuery(api.campers.getByCode, entry.length === 3 ? { code: entry } : "skip");
   const callByCode = useMutation(api.campers.callByCode);
+  const heading = title ?? `${source} Caller`;
   const Icon = source === "Carline" ? Car : Footprints;
   const call = async () => { await callByCode({ code: entry, source }); setEntry(""); };
 
@@ -3295,7 +4126,7 @@ function Caller({ source }: { source: "Carline" | "Walk-Up" }) {
       <div>
         <div className="flex items-center gap-2 mb-5">
           <Icon size={22} className="text-slate-700" />
-          <h2 className="text-xl font-bold text-slate-900">{source} Caller</h2>
+          <h2 className="text-xl font-bold text-slate-900">{heading}</h2>
         </div>
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
           <label className="text-sm font-semibold text-slate-500 block mb-2">Family pickup code</label>
@@ -3335,15 +4166,19 @@ function Caller({ source }: { source: "Carline" | "Walk-Up" }) {
             </div>
           )}
 
-          {/* Fallback: parent doesn't remember the safety number */}
-          <button onClick={() => setLookupOpen(true)}
-            className="w-full text-center text-sm font-semibold text-[#023B64] mt-4 py-2 active:opacity-70">
-            Forgot Safety Number?
-          </button>
+          {/* Fallback: parent doesn't remember the safety number.
+              Hidden for restricted stations (e.g. Front Desk) that may not
+              look campers up by name. */}
+          {allowLookup && (
+            <button onClick={() => setLookupOpen(true)}
+              className="w-full text-center text-sm font-semibold text-[#023B64] mt-4 py-2 active:opacity-70">
+              Forgot Safety Number?
+            </button>
+          )}
         </div>
       </div>
 
-      {lookupOpen && <SafetyNumberLookup onClose={() => setLookupOpen(false)} onRecover={recoverCode} />}
+      {allowLookup && lookupOpen && <SafetyNumberLookup onClose={() => setLookupOpen(false)} onRecover={recoverCode} />}
       {selected && <CamperDetailSheet camper={selected} onClose={() => setSelected(null)} />}
     </>
   );
@@ -5967,9 +6802,10 @@ function CampStructureManagement() {
 
 // ─── Staff Management ─────────────────────────────────────────────────────────
 
-const ALL_ROLES: Role[] = ["counselor","specialist","carline","walkup","dispatcher","runner","director","admin","beforecare","aftercare","bus","unithead"];
+const ALL_ROLES: Role[] = ["counselor","specialist","carline","walkup","frontdesk","dispatcher","runner","director","admin","beforecare","aftercare","bus","unithead"];
 const ROLE_LABEL: Record<string, string> = {
   counselor:"Bunk Counselor",specialist:"Specialist",carline:"Dismissal Staff",walkup:"Dismissal Staff",
+  frontdesk:"Front Desk",
   dispatcher:"Dismissal Staff",runner:"Runner",director:"Director",admin:"Admin",
   beforecare:"Before Care Staff",aftercare:"After Care Staff",bus:"Bus Staff",unithead:"Unit Head",
 };
@@ -5981,6 +6817,7 @@ const PRIMARY_ROLE_OPTIONS: { value: Role; label: string }[] = [
   { value: "counselor",  label: "Bunk Counselor" },
   { value: "specialist", label: "Specialist" },
   { value: "carline",    label: "Dismissal Staff" },
+  { value: "frontdesk",  label: "Front Desk" },
   { value: "runner",     label: "Runner" },
   { value: "bus",        label: "Bus Staff" },
   { value: "beforecare", label: "Before Care Staff" },
@@ -6089,6 +6926,16 @@ function StaffManagement() {
     ...(structureBunks ?? []).filter(s => s.isActive !== false).map(s => s.bunk),
   ])].sort();
 
+  // Generate a 4-digit login code not already assigned to another staff member.
+  const generateCode = () => {
+    const used = new Set((staffList ?? []).map(s => s.code));
+    for (let i = 0; i < 2000; i++) {
+      const candidate = String(Math.floor(1000 + Math.random() * 9000));
+      if (!used.has(candidate)) { setForm(f => ({ ...f, code: candidate })); return; }
+    }
+    setError("Could not find an unused code — all 4-digit codes are taken.");
+  };
+
   const openAdd = () => { setForm(STAFF_BLANK); setAdding(true); setEditing(null); setError(""); };
   const openEdit = (s: StaffDoc) => {
     setForm(staffFormFromDoc(s));
@@ -6154,6 +7001,7 @@ function StaffManagement() {
     "before care staff": "beforecare", "before care": "beforecare", "beforecare": "beforecare",
     "after care staff": "aftercare", "after care": "aftercare", "aftercare": "aftercare",
     "director": "director", "carline": "carline", "walkup": "walkup", "dispatcher": "dispatcher",
+    "front desk": "frontdesk", "frontdesk": "frontdesk", "front desk staff": "frontdesk",
   };
 
   const parseBoolVal = (v: string) => ["true","yes","1","y"].includes(v.toLowerCase().trim());
@@ -6578,8 +7426,15 @@ function StaffManagement() {
 
               <div>
                 <label className={lbl}>Login Code *</label>
-                <input value={form.code} onChange={e => setForm({ ...form, code: e.target.value.replace(/\D/g, "") })}
-                  className={`${inp} font-mono`} placeholder="4-digit code" maxLength={6} inputMode="numeric" />
+                <div className="flex gap-2">
+                  <input value={form.code} onChange={e => setForm({ ...form, code: e.target.value.replace(/\D/g, "") })}
+                    className={`${inp} font-mono flex-1`} placeholder="4-digit code" maxLength={6} inputMode="numeric" />
+                  <button type="button" onClick={generateCode}
+                    className="flex items-center gap-1.5 px-3 rounded-xl text-sm font-semibold text-white whitespace-nowrap active:opacity-80"
+                    style={{ backgroundColor: "#023B64" }}>
+                    <RotateCcw size={15} /> Generate
+                  </button>
+                </div>
               </div>
 
               <div>

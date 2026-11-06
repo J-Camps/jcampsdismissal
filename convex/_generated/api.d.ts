@@ -9,6 +9,7 @@
  */
 
 import type * as attendanceLogs from "../attendanceLogs.js";
+import type * as bunkSchedule from "../bunkSchedule.js";
 import type * as busRoutes from "../busRoutes.js";
 import type * as campStructure from "../campStructure.js";
 import type * as campers from "../campers.js";
@@ -35,6 +36,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   attendanceLogs: typeof attendanceLogs;
+  bunkSchedule: typeof bunkSchedule;
   busRoutes: typeof busRoutes;
   campStructure: typeof campStructure;
   campers: typeof campers;
