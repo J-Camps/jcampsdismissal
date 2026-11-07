@@ -375,6 +375,51 @@ export const deleteAllCampers = mutation({
   },
 });
 
+// ─── Batched camper wipe (the reliable one) ──────────────────────────────────
+// The old deleteAllCampers above `collect()`s entire tables (attendanceLogs
+// especially grows every day), which blows Convex's per-transaction document
+// limits once a season of data has accumulated — the mutation throws and the
+// "Delete All Campers" button hangs. This version deletes a bounded number of
+// campers per call and removes each camper's related rows through that camper's
+// own index (no full-table scans), returning `done` once no campers remain. The
+// client calls it in a loop until `done` is true.
+export const deleteCampersBatch = mutation({
+  args: { batchSize: v.optional(v.number()) },
+  handler: async (ctx, { batchSize }) => {
+    const limit = Math.max(1, Math.min(batchSize ?? 25, 100));
+    const campers = await ctx.db.query("campers").take(limit);
+
+    for (const c of campers) {
+      const id = c._id;
+
+      // Tables keyed by camper via a "by_camper_date" index.
+      for (const r of await ctx.db.query("dailyOverrides").withIndex("by_camper_date", q => q.eq("camperId", id)).collect())
+        await ctx.db.delete(r._id);
+      for (const r of await ctx.db.query("attendanceExceptions").withIndex("by_camper_date", q => q.eq("camperId", id)).collect())
+        await ctx.db.delete(r._id);
+      for (const r of await ctx.db.query("attendanceLogs").withIndex("by_camper_date", q => q.eq("camperId", id)).collect())
+        await ctx.db.delete(r._id);
+      for (const r of await ctx.db.query("lunchRecords").withIndex("by_camper_date", q => q.eq("camperId", id)).collect())
+        await ctx.db.delete(r._id);
+      for (const r of await ctx.db.query("periodAttendanceRecords").withIndex("by_camper_date", q => q.eq("camperId", id)).collect())
+        await ctx.db.delete(r._id);
+      for (const r of await ctx.db.query("trackAttendanceRecords").withIndex("by_camper_date", q => q.eq("camperId", id)).collect())
+        await ctx.db.delete(r._id);
+
+      // Tables keyed by camper via a "by_camper" index.
+      for (const r of await ctx.db.query("periodScheduleRecords").withIndex("by_camper", q => q.eq("camperId", id)).collect())
+        await ctx.db.delete(r._id);
+      for (const r of await ctx.db.query("periodSchedules").withIndex("by_camper", q => q.eq("camperId", id)).collect())
+        await ctx.db.delete(r._id);
+
+      await ctx.db.delete(id);
+    }
+
+    const remaining = await ctx.db.query("campers").take(1);
+    return { deleted: campers.length, done: remaining.length === 0 };
+  },
+});
+
 // ─── New Attendance Mutations ────────────────────────────────────────────────
 
 export const updateArrival = mutation({

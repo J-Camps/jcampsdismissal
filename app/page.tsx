@@ -7757,7 +7757,7 @@ function CamperUpload() {
   const allCampers   = useQuery(api.campers.list);
   const campStructure = useQuery(api.campStructure.list);
   const createCamper    = useMutation(api.campers.create);
-  const deleteAll       = useMutation(api.campers.deleteAllCampers);
+  const deleteCampersBatch = useMutation(api.campers.deleteCampersBatch);
   const clearDailyState = useMutation(api.campers.clearDailyState);
   const createStructure = useMutation(api.campStructure.create);
 
@@ -7775,6 +7775,8 @@ function CamperUpload() {
   const [clearText, setClearText]         = useState("");
   const [clearing, setClearing]           = useState(false);
   const [clearSuccess, setClearSuccess]   = useState(false);
+  const [clearError, setClearError]       = useState("");
+  const [clearProgress, setClearProgress] = useState(0);
 
   // Instructions panel
   const [showInstructions, setShowInstructions] = useState(false);
@@ -7804,10 +7806,25 @@ function CamperUpload() {
   // ── Clear ───────────────────────────────────────────────────────────────────
   const handleClear = async () => {
     setClearing(true);
-    await deleteAll({});
-    setClearing(false);
-    setClearSuccess(true);
-    setClearText("");
+    setClearError("");
+    setClearProgress(0);
+    try {
+      // Delete in bounded batches so a season's worth of attendance rows can't
+      // blow Convex's per-transaction limits. Loop until the server says done.
+      let total = 0;
+      for (let guard = 0; guard < 10000; guard++) {
+        const res = await deleteCampersBatch({ batchSize: 25 });
+        total += res.deleted;
+        setClearProgress(total);
+        if (res.done) break;
+      }
+      setClearSuccess(true);
+      setClearText("");
+    } catch (err: unknown) {
+      setClearError(err instanceof Error ? err.message : "Failed to delete campers. Please try again.");
+    } finally {
+      setClearing(false);
+    }
   };
 
   // ── File picker ─────────────────────────────────────────────────────────────
@@ -8024,7 +8041,7 @@ function CamperUpload() {
         </button>
 
         {/* Clear */}
-        <button onClick={() => { setShowClear(true); setClearSuccess(false); setClearText(""); }}
+        <button onClick={() => { setShowClear(true); setClearSuccess(false); setClearText(""); setClearError(""); setClearProgress(0); }}
           className="w-full flex items-center gap-3 px-4 py-3.5 text-left active:bg-red-50">
           <div className="w-9 h-9 rounded-xl bg-red-50 flex items-center justify-center flex-shrink-0">
             <X size={16} className="text-red-500" />
@@ -8371,7 +8388,7 @@ function CamperUpload() {
       {/* ── Clear Camper Data Modal ── */}
       {showClear && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { if (!clearing) { setShowClear(false); setClearText(""); setClearSuccess(false); }}} />
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { if (!clearing) { setShowClear(false); setClearText(""); setClearSuccess(false); setClearError(""); }}} />
           <div className="relative bg-white rounded-3xl w-full max-w-sm shadow-2xl overflow-hidden">
 
             {clearSuccess ? (
@@ -8419,11 +8436,17 @@ function CamperUpload() {
                       className="w-full border-2 border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono focus:outline-none focus:border-red-400"
                     />
                   </div>
+
+                  {clearError && (
+                    <p className="text-xs font-semibold text-red-600 bg-red-50 border border-red-200 rounded-xl px-3 py-2">
+                      {clearError}
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex border-t border-slate-100">
-                  <button onClick={() => { setShowClear(false); setClearText(""); }}
-                    className="flex-1 py-3.5 text-sm font-semibold text-slate-500 active:bg-slate-50">
+                  <button onClick={() => { setShowClear(false); setClearText(""); setClearError(""); }} disabled={clearing}
+                    className="flex-1 py-3.5 text-sm font-semibold text-slate-500 active:bg-slate-50 disabled:opacity-40">
                     Cancel
                   </button>
                   <button
@@ -8431,7 +8454,7 @@ function CamperUpload() {
                     disabled={clearText !== "DELETE CAMPERS" || clearing}
                     className="flex-1 py-3.5 text-sm font-bold text-white disabled:opacity-40 active:opacity-80"
                     style={{ backgroundColor: "#DC2626" }}>
-                    {clearing ? "Deleting…" : "Delete All Campers"}
+                    {clearing ? (clearProgress > 0 ? `Deleting… (${clearProgress})` : "Deleting…") : "Delete All Campers"}
                   </button>
                 </div>
               </>
