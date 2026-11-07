@@ -1897,7 +1897,12 @@ function CounselorBunkView({ staff, bunks }: {
   const inCount     = baseItems.filter(i => !i.isAbsent && i.arrived && !i.dismissed).length;
   const outCount    = baseItems.filter(i => !i.isAbsent && i.dismissed).length;
   const notInCount  = baseItems.filter(i => !i.isAbsent && !i.arrived && !i.dismissed).length;
-  const called      = baseItems.map(i => i.c).filter(c => c.status === "Called" || c.status === "Assigned");
+  // A camper marked In to After Care has left the bunk, so the bunk's alert no
+  // longer lists them — the alert moves to the After Care view (matches the
+  // per-row badge rule in BunkCamperRow).
+  const called      = baseItems.map(i => i.c).filter(c =>
+    c.dailyCheckpoints?.AfterCare !== true &&
+    (c.status === "Called" || c.status === "Assigned"));
 
   const groups = groupBunkRoster(baseItems, groupBy);
 
@@ -2578,7 +2583,7 @@ function InOutCamperRow({
             <span className="font-semibold text-slate-900 text-xl leading-tight">{name}</span>
             {calledForPickup && (
               <span className="text-[10px] font-bold text-white bg-amber-500 px-1.5 py-0.5 rounded-full tracking-wide flex items-center gap-0.5 animate-pulse">
-                <Megaphone size={9} />{camper.status === "Assigned" ? "ON THE WAY" : "CALLED — SEND TO PICKUP"}
+                <Megaphone size={9} />CALLED
               </span>
             )}
             {camper.hasAllergies && (
@@ -2811,7 +2816,7 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
           <div className="flex flex-wrap gap-1.5">
             {calledForPickup.map(c => (
               <span key={c._id} className="text-xs font-bold text-amber-900 bg-amber-200 px-2.5 py-1 rounded-full">
-                {camperName(c)}{c.status === "Assigned" ? " · on the way" : ""}
+                {camperName(c)}
               </span>
             ))}
           </div>
