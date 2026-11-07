@@ -1,0 +1,11 @@
+preferredName,lastName,bunk,code,arrivalMethod,dismissalMethod,grade,afterCareProgram
+Ava,Tester,Oak 1,101,Carline,After Care,2,JCamps After Care
+Ben,Tester,Oak 1,102,Carline,After Care,2,JCamps After Care
+Cora,Tester,Oak 1,103,Carline,Carline,3,
+Diego,Tester,Maple 2,201,Carline,After Care,4,JCamps After Care
+Ella,Tester,Maple 2,202,Carline,After Care,4,Grossman After Care
+Finn,Tester,Maple 2,203,Carline,Carline,5,
+Gia,Tester,Birch 3,301,Carline,After Care,1,JCamps After Care
+Hugo,Tester,Birch 3,302,Carline,Carline,1,
+Iris,Tester,Birch 3,303,Carline,After Care,3,JCamps After Care
+Jonah,Tester,Oak 1,104,Carline,After Care,2,JCamps After Care

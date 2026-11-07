@@ -2043,7 +2043,10 @@ function BunkCamperRow({ camper, isAbsent, arrived, dismissed, override, lunchRe
 }) {
   const name = camperName(camper);
   const bg = avatarBg(camper.name);
-  const isCalled  = camper.status === "Called" || camper.status === "Assigned";
+  // Once a camper has been marked In to After Care they've left the bunk, so the
+  // bunk no longer shows the "Called" alert — it moves to the After Care view.
+  const inAfterCare = camper.dailyCheckpoints?.AfterCare === true;
+  const isCalled  = !inAfterCare && (camper.status === "Called" || camper.status === "Assigned");
 
   return (
     <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${
@@ -2552,6 +2555,7 @@ function InOutCamperRow({
   // to send them to pickup. Reactive — appears the instant the caller hits Call.
   const calledForPickup =
     checkpoint === "AfterCare" &&
+    arrived &&       // only once marked IN to After Care
     !dismissed &&
     (camper.status === "Called" || camper.status === "Assigned");
 
@@ -2741,7 +2745,8 @@ function CareView({ staff, kind }: { staff: StaffDoc; kind: "BeforeCare" | "Afte
   // live "called for pickup" alert so After Care staff know to send them out.
   const calledForPickup = isBefore ? [] : todayRoster.filter(c =>
     !skip(c) &&
-    !c.dailyCheckpointsOut?.[kind] &&
+    c.dailyCheckpoints?.[kind] &&        // only once marked IN to After Care…
+    !c.dailyCheckpointsOut?.[kind] &&    // …and not yet sent out
     (c.status === "Called" || c.status === "Assigned")
   );
 
